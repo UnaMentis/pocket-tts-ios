@@ -4,7 +4,7 @@
 
 Porting Kyutai Pocket TTS (~117M parameter on-device TTS model) from Python to Rust/Candle for iOS deployment. The goal is to achieve near-identical waveform output (correlation > 0.95) compared to the Python reference.
 
-**Current Status**: Audio amplitude improved 3x after fixes, but waveform correlation still ~0 (random). Several architectural issues identified and fixed, but more work needed.
+**Current Status**: Multiple architectural issues fixed. Waveform correlation improved from 0.0016 to ~0.01. Target is > 0.95. More work needed.
 
 ---
 
@@ -103,6 +103,24 @@ The fix dramatically improved frame generation but waveform content is still dif
 - Voice embeddings confirmed identical between Python and local safetensors files
 - Created `validation/dump_intermediates.py` for Python tensor capture
 
+### 9. FinalLayer Missing norm_final (FIXED)
+**Problem**: Python's `FinalLayer` in FlowNet applies LayerNorm (with `affine=false`) before AdaLN modulation. Rust was missing this normalization step.
+**Solution**: Added `layer_norm_no_affine()` function and applied it before modulation in FinalLayer.
+**Files**:
+- `src/modules/layer_norm.rs` - Added `layer_norm_no_affine` function
+- `src/modules/flownet.rs` - Added norm_final call in FinalLayer
+**Result**: Correlation improved from 0.0016 to 0.0256
+
+### 10. SEANet Output Activation (FIXED)
+**Problem**: Rust applied `tanh()` to SEANet output. Python reference does NOT apply tanh at the end.
+**Solution**: Removed tanh from SEANet forward method.
+**File**: `src/models/mimi.rs`
+
+### 11. Weight Loading Verified (CONFIRMED CORRECT)
+**Verification**: Manual matmul of `bos_emb @ input_linear.weight.T` matches Rust output exactly.
+- Python debug hook for `input_linear` captures different step (not BOS)
+- Actual weight loading is correct
+
 ---
 
 ## Issues Still Being Investigated
@@ -128,9 +146,10 @@ Amplitude is still ~4x quieter but now within reasonable range.
 - Note: Asymmetric range may indicate issues
 
 ### Waveform Correlation
-- Current correlation: ~0 (essentially random)
+- Current correlation: ~0.01 (improved from 0.0016 after fixes)
 - Target: > 0.95
-- This indicates content is fundamentally different, not just scaled
+- Reference implementation (babybirdprd/pocket-tts) achieved ~0.06 max difference
+- Divergence appears to occur in transformer hidden states
 
 ---
 
@@ -173,7 +192,7 @@ Located at: `validation/reference_outputs/`
 - 2 transformer layers
 - 16x temporal upsampling (ConvTranspose1d)
 - SEANet decoder with ELU activation
-- tanh output bounding
+- No output bounding (raw conv output, NOT tanh)
 
 ---
 
@@ -229,16 +248,16 @@ Located at: `validation/reference_outputs/`
 ## Next Steps
 
 1. **Compare transformer hidden states** - Layer-by-layer comparison:
-   - After voice prompting phase
+   - After voice prompting phase (Python: out_norm mean=-0.003, std=0.34)
    - After text prompting phase
-   - During autoregressive generation
-2. **Compare FlowNet conditioning** - The hidden states fed to FlowNet
+   - During autoregressive generation (Rust step 0: mean=-0.0009, std=0.44)
+2. **Compare FlowNet output** - Python flownet_output: mean=-0.45, std=1.25 vs Rust: mean=-0.06, std=2.39
 3. **Verify attention patterns** - Check if self-attention produces similar outputs
 4. **Check KV cache correctness** - Verify cache is populated and used correctly
-5. **Investigate remaining amplitude issue** - 4x difference (0.20 vs 0.60) suggests:
-   - Possible missing scaling in decoder
-   - Incorrect activation functions
-   - Different preprocessing/postprocessing
+5. **Review babybirdprd/pocket-tts implementation** for additional reference:
+   - They achieved ~0.06 max difference from Python
+   - Compare their RMSNorm variance computation
+   - Compare their modulation precomputation approach
 
 ---
 
@@ -248,9 +267,12 @@ Located at: `validation/reference_outputs/`
 # Build
 cargo build --release
 
-# Run test
-./target/release/test-tts -m /Users/ramerman/dev/unamentis/models/kyutai-pocket-ios \
+# Run test (replace with your model path)
+./target/release/test-tts -m /path/to/model/kyutai-pocket-ios \
   -t "Hello, this is a test." -o /tmp/output.wav
+
+# Run full validation
+cd validation && ./run_tests.sh /path/to/model/kyutai-pocket-ios
 
 # Compare waveforms (Python)
 python3 << 'EOF'

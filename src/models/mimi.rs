@@ -349,10 +349,8 @@ impl SEANetDecoder {
         }
 
         // Output projection
-        let x = self.output_conv.forward(&x)?;
-
-        // Tanh to bound to [-1, 1]
-        x.tanh()
+        // Note: Python SEANet does NOT apply tanh - output is raw from final conv
+        self.output_conv.forward(&x)
     }
 }
 

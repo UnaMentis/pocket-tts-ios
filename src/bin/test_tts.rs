@@ -13,7 +13,8 @@
 //!   - voices/ directory with voice embeddings
 
 use std::env;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -22,6 +23,51 @@ use hound::{WavSpec, WavWriter};
 
 // Import from the library (requires rlib crate-type)
 use pocket_tts_ios::models::pocket_tts::PocketTTSModel;
+
+/// Write latents to .npy format for Python compatibility
+fn write_npy(path: &PathBuf, data: &[f32], shape: &[usize; 3]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file = File::create(path)?;
+
+    // NPY format header
+    // Magic number
+    file.write_all(&[0x93, b'N', b'U', b'M', b'P', b'Y'])?;
+    // Version 1.0
+    file.write_all(&[0x01, 0x00])?;
+
+    // Build header dict
+    let header = format!(
+        "{{'descr': '<f4', 'fortran_order': False, 'shape': ({}, {}, {}), }}",
+        shape[0], shape[1], shape[2]
+    );
+
+    // Pad header to make total header + data aligned (header len is 2 bytes in v1.0)
+    // Total before data: 8 (magic+version) + 2 (header len) + header + padding + newline
+    let prefix_len = 10; // magic(6) + version(2) + header_len(2)
+    let total_header_len = prefix_len + header.len() + 1; // +1 for newline
+    let padding_needed = (64 - (total_header_len % 64)) % 64;
+    let padded_header_len = header.len() + padding_needed + 1; // header + padding + newline
+
+    // Write header length (little-endian u16)
+    file.write_all(&(padded_header_len as u16).to_le_bytes())?;
+
+    // Write header
+    file.write_all(header.as_bytes())?;
+
+    // Write padding (spaces)
+    for _ in 0..padding_needed {
+        file.write_all(&[b' '])?;
+    }
+
+    // Newline before data
+    file.write_all(&[b'\n'])?;
+
+    // Write data as little-endian f32
+    for &val in data {
+        file.write_all(&val.to_le_bytes())?;
+    }
+
+    Ok(())
+}
 
 /// Standard test phrases matching reference_harness.py
 const TEST_PHRASES: &[&str] = &[
@@ -115,6 +161,7 @@ fn main() {
     let mut validation_mode = false;
     let mut validation_output_dir = PathBuf::from("./validation/rust_outputs");
     let mut json_report: Option<PathBuf> = None;
+    let mut export_latents_path: Option<PathBuf> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -153,9 +200,9 @@ fn main() {
                 }
             }
             "--export-latents" => {
-                // Latent export not yet implemented - skip the argument
                 if i + 1 < args.len() {
-                    i += 1;  // Skip the path argument
+                    export_latents_path = Some(PathBuf::from(&args[i + 1]));
+                    i += 1;
                 }
             }
             "--help" | "-h" => {
@@ -175,7 +222,7 @@ fn main() {
     if validation_mode {
         run_validation_mode(&model_dir, &validation_output_dir, json_report.as_ref());
     } else {
-        run_single_phrase(&model_dir, &output_path, &test_text);
+        run_single_phrase(&model_dir, &output_path, &test_text, export_latents_path.as_ref());
     }
 }
 
@@ -306,26 +353,53 @@ fn run_validation_mode(model_dir: &PathBuf, output_dir: &PathBuf, json_report: O
 }
 
 /// Run single phrase mode (original behavior)
-fn run_single_phrase(model_dir: &PathBuf, output_path: &PathBuf, test_text: &str) {
+fn run_single_phrase(model_dir: &PathBuf, output_path: &PathBuf, test_text: &str, export_latents_path: Option<&PathBuf>) {
     println!("Configuration:");
     println!("  Model directory: {}", model_dir.display());
     println!("  Output file: {}", output_path.display());
     println!("  Test text: \"{}\"\n", test_text);
+    if let Some(latent_path) = export_latents_path {
+        println!("  Export latents to: {}", latent_path.display());
+    }
 
     let mut model = load_model(model_dir);
     let sample_rate = model.sample_rate();
 
-    // Run synthesis
+    // Run synthesis (with or without latent export)
     println!("Synthesizing audio...");
     let start = Instant::now();
-    let audio = match model.synthesize(test_text) {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("ERROR: Synthesis failed: {:?}", e);
-            std::process::exit(1);
+
+    let (audio, latents_data, latent_shape) = if export_latents_path.is_some() {
+        // Use synthesize_with_latents to get both audio and latents
+        match model.synthesize_with_latents(test_text) {
+            Ok((a, l, s)) => (a, Some(l), Some(s)),
+            Err(e) => {
+                eprintln!("ERROR: Synthesis failed: {:?}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        // Use regular synthesize
+        match model.synthesize(test_text) {
+            Ok(a) => (a, None, None),
+            Err(e) => {
+                eprintln!("ERROR: Synthesis failed: {:?}", e);
+                std::process::exit(1);
+            }
         }
     };
     let synthesis_time = start.elapsed().as_secs_f32();
+
+    // Export latents if requested
+    if let (Some(latent_path), Some(latents), Some(shape)) = (export_latents_path, &latents_data, &latent_shape) {
+        println!("Exporting latents to {}...", latent_path.display());
+        println!("  Shape: [{}, {}, {}]", shape[0], shape[1], shape[2]);
+        if let Err(e) = write_npy(latent_path, latents, shape) {
+            eprintln!("ERROR: Failed to write latents: {:?}", e);
+        } else {
+            println!("  Latents saved successfully");
+        }
+    }
 
     println!("Synthesis complete in {:.2}s", synthesis_time);
     println!("  Audio samples: {}", audio.len());
@@ -476,6 +550,7 @@ fn print_usage() {
     println!("  -t, --text TEXT            Text to synthesize (default: test phrase)");
     println!("  -v, --validation-mode      Run all test phrases and create manifest");
     println!("  --validation-output PATH   Output dir for validation (default: ./validation/rust_outputs)");
+    println!("  --export-latents PATH      Export latents to .npy file (for debugging)");
     println!("  --json-report PATH         Write JSON report to file");
     println!("  -h, --help                 Show this help message");
     println!("\nThe model directory should contain:");

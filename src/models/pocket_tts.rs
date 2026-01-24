@@ -250,6 +250,63 @@ impl PocketTTSModel {
     pub fn version(&self) -> &str {
         "1.0.2"
     }
+
+    /// Synthesize text to audio, also returning raw latents for debugging
+    pub fn synthesize_with_latents(&mut self, text: &str) -> std::result::Result<(Vec<f32>, Vec<f32>, [usize; 3]), PocketTTSError> {
+        eprintln!("[PocketTTS] synthesize_with_latents called with text len: {}", text.len());
+
+        // Tokenize text
+        let token_ids = self.tokenizer.encode(text)?;
+        eprintln!("[PocketTTS] tokenized to {} tokens: {:?}", token_ids.len(), token_ids);
+
+        // Create tensor
+        let token_tensor = Tensor::from_vec(
+            token_ids.iter().map(|&id| id as i64).collect::<Vec<_>>(),
+            (1, token_ids.len()),
+            &self.device,
+        ).map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
+
+        // Get voice embedding
+        let voice = if let Some(ref custom) = self.custom_voice {
+            Some(custom)
+        } else {
+            self.voice_bank.get(self.config.voice_index as usize)
+        };
+
+        // Reset caches for new sequence
+        self.flowlm.reset_cache();
+
+        // Generate latents with FlowLM + FlowNet
+        let num_flow_steps = 1;
+        let latents = self.flowlm.generate_latents(
+            &token_tensor,
+            voice,
+            num_flow_steps,
+            self.config.temperature,
+        ).map_err(|e| PocketTTSError::InferenceFailed(format!("FlowLM: {}", e)))?;
+
+        // Get latent shape and data
+        let latent_dims = latents.dims();
+        let latent_shape = [latent_dims[0], latent_dims[1], latent_dims[2]];
+        let latents_flat: Vec<f32> = latents.flatten_all()
+            .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?
+            .to_vec1()
+            .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
+
+        eprintln!("[PocketTTS] latents shape: {:?}", latent_shape);
+
+        // Decode to audio
+        let audio = self.mimi.forward(&latents)
+            .map_err(|e| PocketTTSError::InferenceFailed(format!("Mimi: {}", e)))?;
+
+        // Convert to Vec<f32>
+        let audio = audio.squeeze(0)
+            .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
+        let audio_vec: Vec<f32> = audio.to_vec1()
+            .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
+
+        Ok((audio_vec, latents_flat, latent_shape))
+    }
 }
 
 impl std::fmt::Debug for PocketTTSModel {

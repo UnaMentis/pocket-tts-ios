@@ -3,8 +3,13 @@
 # Official Kyutai Pocket TTS reference implementation
 pocket-tts>=0.1.0
 
-# OpenAI Whisper for ASR round-trip testing
+# Speech-to-Text models for round-trip testing
+# Primary: OpenAI Whisper (base model)
 openai-whisper>=20231117
+
+# Secondary: faster-whisper (CTranslate2 implementation, more efficient)
+# Allows running multiple model sizes quickly for cross-validation
+faster-whisper>=1.0.0
 
 # WER/CER computation
 jiwer>=3.0.0

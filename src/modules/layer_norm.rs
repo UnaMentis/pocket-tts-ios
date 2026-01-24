@@ -85,3 +85,12 @@ impl Module for LayerNorm {
         Ok(result)
     }
 }
+
+/// Layer normalization without affine parameters (no weight/bias)
+/// Used in FinalLayer where modulation provides the scaling
+pub fn layer_norm_no_affine(x: &Tensor, eps: f64) -> Result<Tensor> {
+    let mean = x.mean_keepdim(candle_core::D::Minus1)?;
+    let x_centered = x.broadcast_sub(&mean)?;
+    let variance = x_centered.sqr()?.mean_keepdim(candle_core::D::Minus1)?;
+    x_centered.broadcast_div(&(variance + eps)?.sqrt()?)
+}
