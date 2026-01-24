@@ -55,7 +55,7 @@ impl TimeEmbedding {
         let mlp_0 = candle_nn::linear(256, hidden_dim, vb.pp("mlp.0"))?;
         let mlp_2 = candle_nn::linear(hidden_dim, hidden_dim, vb.pp("mlp.2"))?;
 
-        // Learnable scale parameter
+        // Learnable scale parameter for RMSNorm (NOT just a simple multiply!)
         let alpha = vb.get((hidden_dim,), "mlp.3.alpha")?;
 
         // DIAGNOSTIC: Log alpha range
@@ -78,41 +78,27 @@ impl TimeEmbedding {
         let sin_emb = angles.sin()?;
         let time_emb = Tensor::cat(&[cos_emb, sin_emb], 1)?;  // [batch, 256] - COS first!
 
-        // DIAGNOSTIC: Log sinusoidal embedding stats before MLP
-        let t_val: f32 = t.to_vec1()?[0];
-        if (t_val - 1.0).abs() < 0.01 || (t_val - 0.0).abs() < 0.1 {
-            let emb_flat: Vec<f32> = time_emb.flatten_all()?.to_vec1()?;
-            let emb_mean = emb_flat.iter().sum::<f32>() / emb_flat.len() as f32;
-            let emb_std = (emb_flat.iter().map(|x| (x - emb_mean).powi(2)).sum::<f32>() / emb_flat.len() as f32).sqrt();
-            eprintln!("[TimeEmbed] t={:.3}: sinusoidal emb mean={:.6}, std={:.4}", t_val, emb_mean, emb_std);
-        }
-
         // MLP with SiLU (not GELU!) - matches Python TimestepEmbedder
         let x = self.mlp_0.forward(&time_emb)?;
-
-        // DIAGNOSTIC: Log after first MLP layer
-        if (t_val - 1.0).abs() < 0.01 || (t_val - 0.0).abs() < 0.1 {
-            let mlp0_flat: Vec<f32> = x.flatten_all()?.to_vec1()?;
-            let mlp0_mean = mlp0_flat.iter().sum::<f32>() / mlp0_flat.len() as f32;
-            let mlp0_std = (mlp0_flat.iter().map(|v| (v - mlp0_mean).powi(2)).sum::<f32>() / mlp0_flat.len() as f32).sqrt();
-            eprintln!("[TimeEmbed] t={:.3}: after mlp_0 mean={:.6}, std={:.4}", t_val, mlp0_mean, mlp0_std);
-        }
-
         let x = candle_nn::ops::silu(&x)?;  // Python uses SiLU, not GELU
         let x = self.mlp_2.forward(&x)?;
 
-        // DIAGNOSTIC: Log after second MLP layer (before alpha)
-        if (t_val - 1.0).abs() < 0.01 || (t_val - 0.0).abs() < 0.1 {
-            let mlp2_flat: Vec<f32> = x.flatten_all()?.to_vec1()?;
-            let mlp2_mean = mlp2_flat.iter().sum::<f32>() / mlp2_flat.len() as f32;
-            let mlp2_std = (mlp2_flat.iter().map(|v| (v - mlp2_mean).powi(2)).sum::<f32>() / mlp2_flat.len() as f32).sqrt();
-            eprintln!("[TimeEmbed] t={:.3}: after mlp_2 mean={:.6}, std={:.4}", t_val, mlp2_mean, mlp2_std);
-        }
-
-        // Apply learnable scale
-        // For consistency models (trained with 1-step distillation), alpha scaling
-        // is intentional and produces the correct target-pointing velocity
-        x.broadcast_mul(&self.alpha)
+        // Apply RMSNorm with learnable alpha (NOT just x * alpha!)
+        // Python's RMSNorm: y = x * alpha / sqrt(var + eps)
+        // where var = x.var(dim=-1, keepdim=True, unbiased=True) [Python default]
+        //
+        // variance = mean((x - mean(x))^2) * n / (n-1) for unbiased=True
+        let eps = 1e-5f64;
+        let n = x.dim(1)? as f64;  // hidden_dim = 512
+        let x_mean = x.mean_keepdim(1)?;  // mean along hidden dim
+        let x_centered = x.broadcast_sub(&x_mean)?;
+        let x_centered_sq = x_centered.sqr()?;
+        // unbiased variance: sum / (n-1)
+        let var_sum = x_centered_sq.sum_keepdim(1)?;
+        let var = (var_sum / (n - 1.0))?;
+        let sqrt_var = (var + eps)?.sqrt()?;
+        let x_normed = x.broadcast_div(&sqrt_var)?;
+        x_normed.broadcast_mul(&self.alpha)
     }
 }
 
@@ -335,15 +321,22 @@ impl FlowNet {
         let cond_flat: Vec<f32> = cond.flatten_all()?.to_vec1()?;
         let c_mean = cond_flat.iter().sum::<f32>() / cond_flat.len() as f32;
         let c_std = (cond_flat.iter().map(|x| (x - c_mean).powi(2)).sum::<f32>() / cond_flat.len() as f32).sqrt();
+        eprintln!("[FlowNet] conditioning (after cond_embed) first 8: {:?}", &cond_flat[..8.min(cond_flat.len())]);
         eprintln!("[FlowNet] conditioning: mean={:.4}, std={:.4}", c_mean, c_std);
 
         // Start from noise (x_0 in LSD notation)
-        let mut current = Tensor::randn(
-            0f32,
-            1f32,
+        // DEBUG: Use zeros instead of randn for deterministic comparison with Python
+        let mut current = Tensor::zeros(
             (batch_size, seq_len, self.config.latent_dim),
+            candle_core::DType::F32,
             device,
         )?;
+        // let mut current = Tensor::randn(
+        //     0f32,
+        //     1f32,
+        //     (batch_size, seq_len, self.config.latent_dim),
+        //     device,
+        // )?;
 
         // LSD decoding: integrate from s=0 toward t=1
         // For i in 0..num_steps:
@@ -370,6 +363,9 @@ impl FlowNet {
                 let vel_flat: Vec<f32> = velocity.flatten_all()?.to_vec1()?;
                 let v_mean = vel_flat.iter().sum::<f32>() / vel_flat.len() as f32;
                 let v_max = vel_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                if step == 0 {
+                    eprintln!("[FlowNet-Step0] velocity first 8: {:?}", &vel_flat[..8.min(vel_flat.len())]);
+                }
                 eprintln!("[FlowNet] step {} (s={:.3}, t={:.3}): vel mean={:.4}, max={:.4}", step, s, t, v_mean, v_max);
             }
 
@@ -378,10 +374,19 @@ impl FlowNet {
         }
 
         // DIAGNOSTIC: Log final latent stats
+        static FLOWNET_STEP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let step = FLOWNET_STEP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let lat_flat: Vec<f32> = current.flatten_all()?.to_vec1()?;
         let l_mean = lat_flat.iter().sum::<f32>() / lat_flat.len() as f32;
         let l_std = (lat_flat.iter().map(|x| (x - l_mean).powi(2)).sum::<f32>() / lat_flat.len() as f32).sqrt();
-        eprintln!("[FlowNet] final latent: mean={:.4}, std={:.4}", l_mean, l_std);
+        if step == 0 {
+            eprintln!("[FlowNet-Step0] final latent first 8: {:?}", &lat_flat[..8.min(lat_flat.len())]);
+            eprintln!("[FlowNet-Step0] mean={:.4}, std={:.4}", l_mean, l_std);
+            // Python: first 8: [-1.7723137, -0.8588331, 0.23708725, 1.6371508, -1.6427871, 1.103927, -1.926453, 1.8970976]
+            // Python: mean=-0.051385, std=1.170856
+        } else {
+            eprintln!("[FlowNet] final latent: mean={:.4}, std={:.4}", l_mean, l_std);
+        }
 
         Ok(current)
     }
@@ -391,35 +396,55 @@ impl FlowNet {
     /// Python's SimpleMLPAdaLN:
     /// 1. Embeds s with time_embed[0] and t with time_embed[1]
     /// 2. AVERAGES the two time embeddings together
-    /// 3. Adds averaged time embedding to conditioning
+    /// 3. Adds averaged time embedding to conditioning (NOT to input!)
     fn forward_step(&self, x: &Tensor, cond: &Tensor, s: &Tensor, t: &Tensor) -> Result<Tensor> {
-        // Project input latent
+        // Project input latent (NO time added here - Python doesn't add time to x!)
         let h = self.input_proj.forward(x)?;
+
+        let s_val: f32 = s.to_vec1()?[0];
+        let t_val: f32 = t.to_vec1()?[0];
+
+        // DIAGNOSTIC: Log input projection output at step 0
+        if s_val < 0.01 {
+            let h_flat: Vec<f32> = h.flatten_all()?.to_vec1()?;
+            eprintln!("[FlowNet-Step0] after input_proj first 8: {:?}", &h_flat[..8.min(h_flat.len())]);
+        }
 
         // Embed start time (s) with time_embed_0
         let time_emb_s = self.time_embed_0.forward(s)?;
         // Embed target time (t) with time_embed_1
         let time_emb_t = self.time_embed_1.forward(t)?;
 
+        // DIAGNOSTIC: Log individual time embeddings at step 0
+        if s_val < 0.01 {
+            let te_s_flat: Vec<f32> = time_emb_s.flatten_all()?.to_vec1()?;
+            let te_t_flat: Vec<f32> = time_emb_t.flatten_all()?.to_vec1()?;
+            eprintln!("[FlowNet-Step0] time_embed_s (s=0) first 8: {:?}", &te_s_flat[..8.min(te_s_flat.len())]);
+            eprintln!("[FlowNet-Step0] time_embed_t (t=1) first 8: {:?}", &te_t_flat[..8.min(te_t_flat.len())]);
+        }
+
         // AVERAGE the two time embeddings (this is critical for LSD!)
         // Python: sum(time_embed[i](ts[i]) for i in range(num_time_conds)) / num_time_conds
         let time_emb_avg = ((time_emb_s + time_emb_t)? * 0.5)?;
 
         // DIAGNOSTIC: Check time embedding
-        let s_val: f32 = s.to_vec1()?[0];
-        let t_val: f32 = t.to_vec1()?[0];
         if s_val < 0.01 || t_val > 0.99 {
             let te_flat: Vec<f32> = time_emb_avg.flatten_all()?.to_vec1()?;
             let te_mean = te_flat.iter().sum::<f32>() / te_flat.len() as f32;
             let te_max = te_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             eprintln!("[FlowNet] s={:.3}, t={:.3}: avg_time_emb mean={:.6}, max={:.4}", s_val, t_val, te_mean, te_max);
+            eprintln!("[FlowNet-Step0] avg_time_emb first 8: {:?}", &te_flat[..8.min(te_flat.len())]);
         }
 
-        // Add averaged time embedding to input hidden states
-        let h = h.broadcast_add(&time_emb_avg.unsqueeze(1)?)?;
-
-        // Combine conditioning with averaged time embedding
+        // Python: y = t_combined + c (time only added to conditioning, NOT to x!)
+        // The time embedding is broadcast to match [batch, seq, hidden]
         let cond_combined = cond.broadcast_add(&time_emb_avg.unsqueeze(1)?)?;
+
+        // DIAGNOSTIC: Log combined conditioning at step 0
+        if s_val < 0.01 {
+            let cc_flat: Vec<f32> = cond_combined.flatten_all()?.to_vec1()?;
+            eprintln!("[FlowNet-Step0] cond_combined (c + time) first 8: {:?}", &cc_flat[..8.min(cc_flat.len())]);
+        }
 
         // Residual blocks
         let mut h = h;

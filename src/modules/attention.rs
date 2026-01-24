@@ -232,14 +232,63 @@ impl FusedMultiHeadAttention {
         let k = k.reshape((batch_size, seq_len, self.num_heads, self.head_dim))?;
         let v = v.reshape((batch_size, seq_len, self.num_heads, self.head_dim))?;
 
+        // DEBUG: Log Q, K, V before RoPE
+        // Counter: 0-5 = voice layers, 6-11 = text layers, 12-17 = step 0 layers
+        static DEBUG_ATTN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let attn_call = DEBUG_ATTN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let is_text_l0 = attn_call == 6;
+        let is_step0_l0 = attn_call == 12;
+
+        if is_text_l0 {
+            if let Ok(vals) = q.narrow(1, 0, 1)?.narrow(2, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
+                eprintln!("[Attn-L0] Q head0 first 8 before RoPE: {:?}", &vals[..8.min(vals.len())]);
+            }
+            if let Ok(vals) = k.narrow(1, 0, 1)?.narrow(2, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
+                eprintln!("[Attn-L0] K head0 first 8 before RoPE: {:?}", &vals[..8.min(vals.len())]);
+            }
+            if let Ok(vals) = v.narrow(1, 0, 1)?.narrow(2, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
+                eprintln!("[Attn-L0] V head0 first 8: {:?}", &vals[..8.min(vals.len())]);
+            }
+        }
+        if is_step0_l0 {
+            eprintln!("[Attn-L0-Step0] seq_len={}, hidden_size={}", seq_len, hidden_size);
+            if let Ok(vals) = q.narrow(1, 0, 1)?.narrow(2, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
+                eprintln!("[Attn-L0-Step0] Q head0 first 8 before RoPE: {:?}", &vals[..8.min(vals.len())]);
+            }
+            if let Ok(vals) = k.narrow(1, 0, 1)?.narrow(2, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
+                eprintln!("[Attn-L0-Step0] K head0 first 8 before RoPE: {:?}", &vals[..8.min(vals.len())]);
+            }
+            if let Ok(vals) = v.narrow(1, 0, 1)?.narrow(2, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
+                eprintln!("[Attn-L0-Step0] V head0 first 8: {:?}", &vals[..8.min(vals.len())]);
+            }
+        }
+
         // Apply rotary embeddings BEFORE transpose (RoPE expects [batch, seq, heads, dim])
         // This matches Python which applies RoPE before transposing for attention
         let (q, k) = if let Some(rope) = rotary {
             let offset = kv_cache.as_ref().map(|c| c.seq_len()).unwrap_or(0);
+            if is_text_l0 {
+                eprintln!("[Attn-L0] RoPE offset: {}", offset);
+            }
+            if is_step0_l0 {
+                eprintln!("[Attn-L0-Step0] RoPE offset: {} (should be 132 = 125 voice + 7 text)", offset);
+            }
             rope.forward(&q, &k, offset)?
         } else {
             (q, k)
         };
+
+        // DEBUG: Log Q after RoPE
+        if is_text_l0 {
+            if let Ok(vals) = q.narrow(1, 0, 1)?.narrow(2, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
+                eprintln!("[Attn-L0] Q head0 first 8 after RoPE: {:?}", &vals[..8.min(vals.len())]);
+            }
+        }
+        if is_step0_l0 {
+            if let Ok(vals) = q.narrow(1, 0, 1)?.narrow(2, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
+                eprintln!("[Attn-L0-Step0] Q head0 first 8 after RoPE: {:?}", &vals[..8.min(vals.len())]);
+            }
+        }
 
         // Transpose to [batch, num_heads, seq, head_dim] for attention computation
         let q = q.transpose(1, 2)?;
@@ -253,8 +302,49 @@ impl FusedMultiHeadAttention {
             (k, v)
         };
 
+        // DEBUG: Log K cache state and attention computation
+        if is_step0_l0 {
+            eprintln!("[Attn-L0-Step0] K shape after cache: {:?} (should be [1,16,133,64])", k.dims());
+            eprintln!("[Attn-L0-Step0] Q shape: {:?} (should be [1,16,1,64])", q.dims());
+        }
+        if is_text_l0 {
+            eprintln!("[Attn-L0] K shape after cache: {:?}", k.dims());
+            eprintln!("[Attn-L0] Q shape: {:?}", q.dims());
+            // K should have shape [1, 16, 132, 64] (125 voice + 7 text = 132 total in cache)
+            // Q should have shape [1, 16, 7, 64] (7 text tokens)
+
+            // Log K values from position 0 (first voice position in cache)
+            if let Ok(k_vals) = k.narrow(2, 0, 1)?.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
+                eprintln!("[Attn-L0] K[pos=0] head0 first 8 (voice): {:?}", &k_vals[..8.min(k_vals.len())]);
+            }
+
+            // Log K values from position 125 (first text position in cache)
+            if let Ok(k_vals) = k.narrow(2, 125, 1)?.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
+                eprintln!("[Attn-L0] K[pos=125] head0 first 8 (text): {:?}", &k_vals[..8.min(k_vals.len())]);
+            }
+
+            // Log V values too for completeness
+            if let Ok(v_vals) = v.narrow(2, 0, 1)?.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
+                eprintln!("[Attn-L0] V[pos=0] head0 first 8 (voice): {:?}", &v_vals[..8.min(v_vals.len())]);
+            }
+        }
+
         // Attention scores: Q @ K^T
         let attn_weights = q.matmul(&k.transpose(2, 3)?)?;
+
+        // DEBUG: Log raw attention scores before scaling
+        if attn_call == 6 {
+            // attn_weights shape: [1, 16, 17, 142]
+            // Log Q[0] attending to K positions (head 0, first query position)
+            if let Ok(scores) = attn_weights.narrow(1, 0, 1)?.narrow(2, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
+                eprintln!("[Attn-L0] Raw attn scores head0 q0 first 8: {:?}", &scores[..8.min(scores.len())]);
+                // Also log scores for positions 125-132 (text attending to text)
+                if scores.len() > 132 {
+                    eprintln!("[Attn-L0] Raw attn scores head0 q0 pos125-132: {:?}", &scores[125..133]);
+                }
+            }
+        }
+
         let attn_weights = (attn_weights * self.scale as f64)?;
 
         // Apply causal mask if needed
@@ -268,8 +358,25 @@ impl FusedMultiHeadAttention {
         // Softmax
         let attn_weights = candle_nn::ops::softmax(&attn_weights, candle_core::D::Minus1)?;
 
+        // DEBUG: Log softmax attention weights
+        if attn_call == 6 {
+            if let Ok(probs) = attn_weights.narrow(1, 0, 1)?.narrow(2, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
+                eprintln!("[Attn-L0] Softmax attn probs head0 q0 first 8: {:?}", &probs[..8.min(probs.len())]);
+                if probs.len() > 132 {
+                    eprintln!("[Attn-L0] Softmax attn probs head0 q0 pos125-132: {:?}", &probs[125..133]);
+                }
+            }
+        }
+
         // Weighted sum of values
         let attn_output = attn_weights.matmul(&v)?;
+
+        // DEBUG: Log attention output
+        if is_text_l0 {
+            if let Ok(out) = attn_output.narrow(1, 0, 1)?.narrow(2, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
+                eprintln!("[Attn-L0] Attn output head0 q0 first 8: {:?}", &out[..8.min(out.len())]);
+            }
+        }
 
         // Reshape back: [batch, num_heads, seq, head_dim] -> [batch, seq, hidden]
         let attn_output = attn_output
@@ -277,7 +384,21 @@ impl FusedMultiHeadAttention {
             .reshape((batch_size, seq_len, self.num_heads * self.head_dim))?;
 
         // Output projection
-        self.out_proj.forward(&attn_output)
+        let final_output = self.out_proj.forward(&attn_output)?;
+
+        // DEBUG: Log final attention output (after out_proj)
+        if is_text_l0 {
+            if let Ok(out) = final_output.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
+                eprintln!("[Attn-L0] FINAL output (after out_proj) first 8: {:?}", &out[..8.min(out.len())]);
+            }
+        }
+        if is_step0_l0 {
+            if let Ok(out) = final_output.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
+                eprintln!("[Attn-L0-Step0] FINAL output (after out_proj) first 8: {:?}", &out[..8.min(out.len())]);
+            }
+        }
+
+        Ok(final_output)
     }
 
     fn create_causal_mask(&self, q_len: usize, kv_len: usize, device: &Device) -> Result<Tensor> {

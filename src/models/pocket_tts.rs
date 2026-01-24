@@ -204,13 +204,18 @@ impl PocketTTSModel {
                 &self.device,
             ).map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
 
-            // Generate latents with FlowLM + FlowNet
-            let latents = self.flowlm.generate_latents(
+            // Generate latents with FlowLM + FlowNet (returns normalized latents)
+            let latents_normalized = self.flowlm.generate_latents(
                 &token_tensor,
                 voice,
                 num_flow_steps,
                 self.config.temperature,
             ).map_err(|e| PocketTTSError::InferenceFailed(format!("FlowLM: {}", e)))?;
+
+            // Denormalize latents before passing to Mimi
+            // Python: mimi_decoding_input = latent * emb_std + emb_mean
+            let latents = self.flowlm.denormalize_latents(&latents_normalized)
+                .map_err(|e| PocketTTSError::InferenceFailed(format!("Denormalize: {}", e)))?;
 
             // Decode with overlap-add
             let (audio, tail) = self.mimi.decode_streaming(
