@@ -146,10 +146,19 @@ Amplitude is still ~4x quieter but now within reasonable range.
 - Note: Asymmetric range may indicate issues
 
 ### Waveform Correlation
-- Current correlation: ~0.01 (improved from 0.0016 after fixes)
+- Current correlation: ~0.01-0.02
 - Target: > 0.95
 - Reference implementation (babybirdprd/pocket-tts) achieved ~0.06 max difference
-- Divergence appears to occur in transformer hidden states
+
+### Root Cause Found (2025-01-24)
+**The transformer is working correctly!** Divergence is in FlowNet's random noise initialization.
+
+FlowNet starts from `randn(0, 1, ...)` - random Gaussian noise. Different random seeds between Python and Rust cause different latents, which cascade into different audio.
+
+For proper comparison, need to:
+1. Use same random seed, OR
+2. Use zeros instead of noise for testing, OR
+3. Compare velocity (model output) instead of final latent
 
 ---
 
@@ -289,3 +298,120 @@ EOF
 ## Session Notes
 
 This document was created to prevent repeated attempts at already-tried fixes. All changes are in unstaged files pending testing of the voice concatenation fix.
+
+---
+
+## Session 2025-01-24: Layer-by-Layer Debugging
+
+### Methodology
+Systematically comparing Rust intermediate values against Python to find divergence point.
+
+### Findings
+
+#### 1. LayerNorm Epsilon (FIXED)
+- **Problem**: FlowLMConfig used `rms_norm_eps: 1e-6` but Python nn.LayerNorm default is `1e-5`
+- **Fix**: Changed to `1e-5` in src/models/flowlm.rs
+- **Result**: Correlation improved from 0.0109 to 0.0172
+
+#### 2. Components Verified as MATCHING Python
+
+| Component | Rust Value | Python Reference | Status |
+|-----------|------------|------------------|--------|
+| BOS embedding first 8 | [-0.021240234, 0.012329102, -0.018310547, 0.06640625, 0.028442383, 0.09375, -0.02319336, 0.001335144] | [-0.02124023, 0.0123291, -0.01831055, 0.06640625, 0.02844238, 0.09375, -0.02319336, 0.00133514] | ✅ MATCH |
+| LayerNorm (norm1) output first 8 | [-0.13284129, 0.053179074, 0.12783831, -0.04164055, 0.019039862, 0.14751202, -0.051860895, 0.010783803] | [-0.13284129, 0.05317907, 0.12783831, ...] | ✅ MATCH |
+| Q before RoPE head0 first 8 | [1.091528, 0.8480718, -0.55045056, -1.6421012, -0.7520723, -0.9170052, -2.2115798, 1.0723763] | [1.0915277, 0.8480716, -0.5504507, -1.6421008, -0.75207204, -0.91700494, -2.2115788, 1.0723768] | ✅ MATCH |
+| Q after RoPE (offset=125) head0 first 8 | [1.3822591, -0.0043869615, -1.2832044, -1.1631329, 0.558903, -1.0460109, 1.0118504, -2.2399185] | (verified with test script) | ✅ MATCH |
+
+#### 3. Current Investigation: Attention and KV Cache
+
+Latest diagnostic output:
+```
+[Attn-L0] K shape after cache: [1, 16, 132, 64]  # 125 voice + 7 text
+[Attn-L0] Q shape: [1, 16, 7, 64]                # 7 text tokens
+[Attn-L0] K[pos=125] head0 first 8: [5.314439, -3.7322762, -3.3927584, -1.637581, 1.1816614, -4.9086018, 0.12820822, -1.8842314]
+[Attn-L0] Raw attn scores head0 q0 first 8: [13.028812, -3.285898, -14.347115, -23.565731, ...]
+[Attn-L0] Softmax attn probs head0 q0 first 8: [0.005478, 0.000713, 0.000179, ...]
+```
+
+**Key observation**: KV cache shapes are correct (132 = 125 voice + 7 text), but need Python reference values to compare attention scores.
+
+#### 4. Statistics Comparison
+
+| Metric | Python | Rust | Notes |
+|--------|--------|------|-------|
+| out_norm mean | -0.003252 | -0.001425 | Close |
+| out_norm std | 0.340720 | 0.4230 | Different |
+| flownet_output mean | -0.448619 | -0.1594 | Different |
+| flownet_output std | 1.246537 | 2.5161 | ~2x higher in Rust |
+
+**Note**: Python debug outputs used different text ("Hello, this is a test of the Pocket TTS system." - 17 tokens) vs current test ("Hello, this is a test." - 7 tokens). Need to regenerate with same text.
+
+### Hypotheses to Test
+
+1. **KV cache values from voice phase may be incorrect**
+   - Need to compare K[pos=0] (first voice position) with Python
+   - Voice embedding processing might differ
+
+2. **V values might be computed differently**
+   - Haven't compared V values yet
+
+3. **Attention softmax precision**
+   - Large negative values before softmax (-23.56) could cause numerical issues
+
+4. **Scale factor**
+   - Using `1.0 / sqrt(head_dim)` = `1.0 / sqrt(64)` = 0.125
+   - Verify Python uses same scaling
+
+### Verified Components (All Match Python!)
+
+**Layer 0 Text Phase** - All intermediate values verified:
+| Step | Python | Rust | Status |
+|------|--------|------|--------|
+| norm1 | [-0.1328412, 0.05317907, ...] | [-0.13284129, 0.053179074, ...] | ✅ |
+| Q before RoPE | [1.0915278, 0.848071, ...] | [1.091528, 0.8480718, ...] | ✅ |
+| K before RoPE | [6.485494, 0.33394, ...] | [6.4854937, 0.3339412, ...] | ✅ |
+| V | [0.032204, -0.014147, ...] | [0.032203987, -0.014147918, ...] | ✅ |
+| Voice K cache[0] | [6.905799, -3.9978523, ...] | [6.9058, -3.9978526, ...] | ✅ |
+| Voice V cache[0] | [-0.06757915, 0.01683673, ...] | [-0.06757918, 0.016836748, ...] | ✅ |
+| Attention output | [0.007504372, 0.004966091, ...] | [0.0075043687, 0.0049661067, ...] | ✅ |
+| norm2 | [-0.004807731, 0.029376400, ...] | [-0.0048077395, 0.02937645, ...] | ✅ |
+| MLP output | [-0.03569853, -0.01593189, ...] | [-0.035698526, -0.0159319, ...] | ✅ |
+| **Layer 0 output** | [-0.036128733, -0.008097149, ...] | [-0.036128726, -0.008097142, ...] | ✅ |
+
+### Issue Found: Divergence in Autoregressive Generation
+
+The text processing phase works correctly! But **step 0 of latent generation diverges**:
+- Python step 0 hidden: [-0.24085297, -0.47014824, 0.23839632, 1.0895451, ...]
+- Rust step 0 hidden: [-0.2274104, -0.35906476, 0.05141802, 0.5091589, ...]
+
+This is when BOS embedding goes through the transformer with the full KV cache (132 positions).
+
+### Step 0 (First Latent Generation) - Also Verified!
+
+| Step | Python | Rust | Status |
+|------|--------|------|--------|
+| norm1 first 8 | [-0.02429175, 0.07576486, ...] | [-0.02429175, 0.07576486, ...] | ✅ |
+| attn output | [0.02120438, -0.02153354, ...] | [0.0212044, -0.021533545, ...] | ✅ |
+| norm2 | [0.02885031, -0.04048911, ...] | [0.02885034, -0.04048911, ...] | ✅ |
+| MLP | [-0.04567280, -0.02552469, ...] | [-0.045672808, -0.025524687, ...] | ✅ |
+| Layer 0 output | [-0.02498163, -0.04425660, ...] | [-0.02498162, -0.044256598, ...] | ✅ |
+| **FINAL HIDDEN** (after all layers + out_norm) | [-0.22741127, -0.35906517, 0.05141879, 0.50915742, ...] | [-0.2274104, -0.35906476, 0.05141802, 0.5091589, ...] | ✅ |
+
+**The entire transformer matches Python to 5+ decimal places!**
+
+### FlowNet Investigation
+
+With zeros instead of random noise, FlowNet step 0 produces:
+```
+velocity first 8: [-0.6430681, 0.23889166, 0.2160035, 1.347405, -0.71227896, 3.2762485, -0.24154162, 0.1518566]
+```
+
+Need Python comparison with same (zero) starting point to verify FlowNet correctness.
+
+### Next Steps
+
+1. **Modify Python to use zeros** instead of randn in FlowNet for comparison
+2. **Compare FlowNet velocity** between Python and Rust with identical inputs
+3. If FlowNet matches, **check Mimi decoder**
+4. Once all components verified, use same random seed for full comparison
+5. Alternatively: implement seeded RNG for reproducibility

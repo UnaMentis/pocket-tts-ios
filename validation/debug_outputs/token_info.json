@@ -1,5 +1,5 @@
 {
-  "text": "Hello, this is a test of the Pocket TTS system.",
+  "text": "Hello, this is a test.",
   "tokens": [
     2994,
     262,
@@ -7,17 +7,7 @@
     277,
     267,
     1115,
-    272,
-    265,
-    1456,
-    603,
-    597,
-    602,
-    854,
-    640,
-    260,
-    848,
     263
   ],
-  "num_tokens": 17
+  "num_tokens": 7
 }
