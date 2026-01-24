@@ -1,0 +1,76 @@
+{
+  "model_version": "rust_candle_port",
+  "rust_version": "0.1.0",
+  "sample_rate": 24000,
+  "phrases": [
+    {
+      "id": "phrase_00",
+      "text": "Hello, this is a test of the Pocket TTS system.",
+      "wav_file": "phrase_00_rust.wav",
+      "audio_stats": {
+        "samples": 5768,
+        "duration_sec": 0.2403,
+        "max_amplitude": 0.13071331,
+        "mean_amplitude": 0.026131216,
+        "rms": 0.034606025,
+        "dc_offset": -0.010660133,
+        "nan_count": 0,
+        "inf_count": 0,
+        "clip_count": 0
+      },
+      "synthesis_time_sec": 0.0873
+    },
+    {
+      "id": "phrase_01",
+      "text": "The quick brown fox jumps over the lazy dog.",
+      "wav_file": "phrase_01_rust.wav",
+      "audio_stats": {
+        "samples": 5768,
+        "duration_sec": 0.2403,
+        "max_amplitude": 0.1969329,
+        "mean_amplitude": 0.039388575,
+        "rms": 0.05239091,
+        "dc_offset": -0.023184363,
+        "nan_count": 0,
+        "inf_count": 0,
+        "clip_count": 0
+      },
+      "synthesis_time_sec": 0.0842
+    },
+    {
+      "id": "phrase_02",
+      "text": "One two three four five six seven eight nine ten.",
+      "wav_file": "phrase_02_rust.wav",
+      "audio_stats": {
+        "samples": 5768,
+        "duration_sec": 0.2403,
+        "max_amplitude": 0.15336898,
+        "mean_amplitude": 0.03131353,
+        "rms": 0.04013953,
+        "dc_offset": -0.02169357,
+        "nan_count": 0,
+        "inf_count": 0,
+        "clip_count": 0
+      },
+      "synthesis_time_sec": 0.0841
+    },
+    {
+      "id": "phrase_03",
+      "text": "How are you doing today?",
+      "wav_file": "phrase_03_rust.wav",
+      "audio_stats": {
+        "samples": 5768,
+        "duration_sec": 0.2403,
+        "max_amplitude": 0.2790011,
+        "mean_amplitude": 0.03738712,
+        "rms": 0.062450036,
+        "dc_offset": -0.016118612,
+        "nan_count": 0,
+        "inf_count": 0,
+        "clip_count": 0
+      },
+      "synthesis_time_sec": 0.0765
+    }
+  ],
+  "all_healthy": true
+}

@@ -1,0 +1,18 @@
+# Rust build artifacts
+/target/
+
+# Cargo lock (optional - some prefer to track this)
+# Cargo.lock
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# macOS
+.DS_Store
+
+# Python virtual environment
+.venv/
+__pycache__/
+*.pyc

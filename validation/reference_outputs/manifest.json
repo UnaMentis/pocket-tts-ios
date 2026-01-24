@@ -1,0 +1,85 @@
+{
+  "model_version": "official_pocket_tts",
+  "sample_rate": 24000,
+  "voice": "alba",
+  "phrases": [
+    {
+      "id": "phrase_00",
+      "text": "Hello, this is a test of the Pocket TTS system.",
+      "wav_file": "phrase_00.wav",
+      "npy_file": "phrase_00_audio.npy",
+      "audio_stats": {
+        "samples": 86400,
+        "duration_sec": 3.6,
+        "max_amplitude": 0.6050423979759216,
+        "mean_amplitude": 0.05573451891541481,
+        "rms": 0.09903750568628311,
+        "dc_offset": -1.6287984180962667e-05
+      },
+      "asr": {
+        "transcription": "Hello, this is a test of the Pocket TTS system.",
+        "wer": 0.0,
+        "cer": 0.0
+      }
+    },
+    {
+      "id": "phrase_01",
+      "text": "The quick brown fox jumps over the lazy dog.",
+      "wav_file": "phrase_01.wav",
+      "npy_file": "phrase_01_audio.npy",
+      "audio_stats": {
+        "samples": 88320,
+        "duration_sec": 3.68,
+        "max_amplitude": 0.8598655462265015,
+        "mean_amplitude": 0.06208164244890213,
+        "rms": 0.11099069565534592,
+        "dc_offset": 6.500336894532666e-05
+      },
+      "asr": {
+        "transcription": "The quick brown fox jumps over the lazy dog.",
+        "wer": 0.0,
+        "cer": 0.0
+      }
+    },
+    {
+      "id": "phrase_02",
+      "text": "One two three four five six seven eight nine ten.",
+      "wav_file": "phrase_02.wav",
+      "npy_file": "phrase_02_audio.npy",
+      "audio_stats": {
+        "samples": 59520,
+        "duration_sec": 2.48,
+        "max_amplitude": 0.6443377137184143,
+        "mean_amplitude": 0.08517637103796005,
+        "rms": 0.12700073421001434,
+        "dc_offset": 0.00014435728371609002
+      },
+      "asr": {
+        "transcription": "1-2-3-4-5-6-7-8-9-10.",
+        "wer": 1.0,
+        "cer": 0.9795918367346939
+      }
+    },
+    {
+      "id": "phrase_03",
+      "text": "How are you doing today?",
+      "wav_file": "phrase_03.wav",
+      "npy_file": "phrase_03_audio.npy",
+      "audio_stats": {
+        "samples": 32640,
+        "duration_sec": 1.36,
+        "max_amplitude": 0.5537478923797607,
+        "mean_amplitude": 0.09993606805801392,
+        "rms": 0.14520414173603058,
+        "dc_offset": -8.667996735312045e-05
+      },
+      "asr": {
+        "transcription": "How are you doing today?",
+        "wer": 0.0,
+        "cer": 0.0
+      }
+    }
+  ],
+  "aggregate_wer": 0.25,
+  "aggregate_cer": 0.24489795918367346
+}

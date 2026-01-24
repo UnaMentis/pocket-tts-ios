@@ -1,0 +1,19 @@
+# Pocket TTS Validation Harness Dependencies
+
+# Official Kyutai Pocket TTS reference implementation
+pocket-tts>=0.1.0
+
+# OpenAI Whisper for ASR round-trip testing
+openai-whisper>=20231117
+
+# WER/CER computation
+jiwer>=3.0.0
+
+# Array operations
+numpy>=1.24.0,<2.0.0
+
+# Audio I/O and signal processing
+scipy>=1.10.0
+
+# Progress bars for long operations
+tqdm>=4.65.0

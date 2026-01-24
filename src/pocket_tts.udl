@@ -1,0 +1,111 @@
+// UniFFI interface definition for Pocket TTS iOS
+// This generates Swift bindings for the Rust implementation
+
+namespace pocket_tts_ios {
+    // Library version
+    string version();
+
+    // Available voices
+    sequence<PocketVoiceInfo> available_voices();
+};
+
+// Voice information
+dictionary PocketVoiceInfo {
+    u32 index;
+    string name;
+    string gender;
+    string description;
+};
+
+// TTS configuration
+dictionary TTSConfig {
+    u32 voice_index;
+    f32 temperature;
+    f32 top_p;
+    f32 speed;
+    u32 consistency_steps;
+    boolean use_fixed_seed;
+    u32 seed;
+};
+
+// Audio chunk for streaming
+dictionary AudioChunk {
+    bytes audio_data;
+    u32 sample_rate;
+    boolean is_final;
+};
+
+// Synthesis result
+dictionary SynthesisResult {
+    bytes audio_data;
+    u32 sample_rate;
+    u32 channels;
+    f64 duration_seconds;
+};
+
+// Error types
+[Error]
+enum PocketTTSError {
+    "ModelNotLoaded",
+    "ModelLoadFailed",
+    "TokenizationFailed",
+    "InferenceFailed",
+    "InvalidVoice",
+    "InvalidConfig",
+    "AudioEncodingFailed",
+    "IoError",
+};
+
+// Event handler for streaming synthesis
+callback interface TTSEventHandler {
+    void on_audio_chunk(AudioChunk chunk);
+    void on_progress(f32 progress);
+    void on_complete();
+    void on_error(string message);
+};
+
+// Main TTS engine interface
+interface PocketTTSEngine {
+    // Constructor - loads model from path
+    [Throws=PocketTTSError]
+    constructor(string model_path);
+
+    // Check if model is loaded and ready
+    boolean is_ready();
+
+    // Get model info
+    string model_version();
+    u64 parameter_count();
+
+    // Configure synthesis parameters
+    [Throws=PocketTTSError]
+    void configure(TTSConfig config);
+
+    // Get current configuration
+    TTSConfig get_config();
+
+    // Synchronous synthesis - returns complete audio
+    [Throws=PocketTTSError]
+    SynthesisResult synthesize(string text);
+
+    // Synchronous synthesis with specific voice
+    [Throws=PocketTTSError]
+    SynthesisResult synthesize_with_voice(string text, u32 voice_index);
+
+    // Start streaming synthesis
+    [Throws=PocketTTSError]
+    void start_streaming(string text, TTSEventHandler handler);
+
+    // Cancel ongoing synthesis
+    void cancel();
+
+    // Voice cloning - set reference audio
+    [Throws=PocketTTSError]
+    void set_reference_audio(bytes audio_data, u32 sample_rate);
+
+    // Clear reference audio (use built-in voice)
+    void clear_reference_audio();
+
+    // Unload model to free memory
+    void unload();
+};
