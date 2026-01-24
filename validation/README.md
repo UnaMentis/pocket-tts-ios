@@ -6,6 +6,20 @@ Validates the Rust/Candle implementation of Kyutai Pocket TTS against the offici
 
 We're not evaluating if Pocket TTS is good (Kyutai proved that). We're verifying our Rust port produces **the same output** as the Python reference. The reference implementation IS our ground truth.
 
+## Model Setup
+
+Before running validation, download the model files:
+
+```bash
+# From project root
+python3 scripts/download-model.py
+```
+
+This downloads from HuggingFace to `models/kyutai-pocket-ios/`:
+- `model.safetensors` (~225MB) - Main model weights
+- `tokenizer.model` - SentencePiece tokenizer
+- `voices/alba.safetensors` - Voice embedding
+
 ## Three-Layer Validation
 
 ### Layer 1: Reference Comparison (Ground Truth)
@@ -25,31 +39,51 @@ We're not evaluating if Pocket TTS is good (Kyutai proved that). We're verifying
 
 ## Quick Start
 
-```bash
-cd rust/pocket-tts-ios
+**Option 1: Automated (Recommended)**
 
-# Install Python dependencies
+```bash
+# From project root - runs everything
+./validation/run_tests.sh
+
+# Quick mode (skip ASR round-trip)
+./validation/run_tests.sh --quick
+
+# Force rebuild
+./validation/run_tests.sh --rebuild
+```
+
+**Option 2: Manual Steps**
+
+```bash
+# 1. Download model (if not already done)
+python3 scripts/download-model.py
+
+# 2. Install Python dependencies
 pip install -r validation/requirements.txt
 
-# Generate reference outputs (run once)
+# 3. Generate reference outputs (run once)
 python validation/reference_harness.py --with-whisper
 
-# Build Rust harness
+# 4. Build Rust harness
 cargo build --release --bin test-tts
 
-# Run validation
-python validation/validate.py --model-dir /path/to/model
+# 5. Run validation
+python validation/validate.py --model-dir models/kyutai-pocket-ios
 ```
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `reference_harness.py` | Generate Python reference outputs |
+| `run_tests.sh` | Master test runner (automated) |
 | `validate.py` | Main validation orchestrator |
+| `compare_intermediates.py` | Debug tool: compare .npy tensors |
+| `reference_harness.py` | Generate Python reference outputs |
+| `dump_intermediates.py` | Export Python intermediate tensors |
 | `requirements.txt` | Python dependencies |
 | `reference_outputs/` | Python-generated ground truth |
 | `rust_outputs/` | Rust-generated outputs for comparison |
+| `debug_outputs/` | Intermediate tensors for debugging |
 
 ## Usage
 
@@ -142,19 +176,59 @@ For GitHub Actions or similar:
       --json-report validation-results.json
 ```
 
+## Debugging with Intermediate Comparisons
+
+When validation fails, use intermediate tensor comparison to locate the divergence:
+
+```bash
+# Export Rust latents
+./target/release/test-tts \
+  --model-dir models/kyutai-pocket-ios \
+  --text "Hello world" \
+  --output test.wav \
+  --export-latents rust_latents.npy
+
+# Export Python intermediates
+python validation/dump_intermediates.py
+
+# Compare specific tensors
+python validation/compare_intermediates.py \
+  --rust rust_latents.npy \
+  --python validation/debug_outputs/flownet_output.npy
+
+# Compare entire directories
+python validation/compare_intermediates.py \
+  validation/rust_outputs/ \
+  validation/reference_outputs/
+```
+
+Output shows cosine similarity, RMSE, and pinpoints where the largest differences occur.
+
+## STT Models for Round-Trip Testing
+
+The validation uses two speech-to-text models for cross-validation:
+
+1. **openai-whisper** - OpenAI's Whisper (reference)
+2. **faster-whisper** - CTranslate2 optimized version (faster, same accuracy)
+
+Both are installed via `requirements.txt`. The validation uses the "base" model size for speed.
+
 ## Troubleshooting
 
+**"Model directory not found"**
+Run `python3 scripts/download-model.py` first.
+
 **"Reference outputs not found"**
-Run `python reference_harness.py --with-whisper` first.
+Run `python reference_harness.py --with-whisper` first, or use `./run_tests.sh` which handles this.
 
 **"Rust binary not found"**
 Run `cargo build --release --bin test-tts` first.
 
-**Layer 1 fails with low correlation**
-Implementation bug. Check latent shapes and values at each stage.
+**Layer 1 fails with low correlation (~0)**
+Major implementation bug. Use `compare_intermediates.py` to locate where outputs diverge.
 
 **Layer 2 fails with high WER delta**
-Audio is being generated but is distorted. Check signal processing stages.
+Audio is being generated but is distorted. Check Mimi decoder and SEANet blocks.
 
 **Layer 3 fails with NaN/Inf**
 Numerical instability in model. Check for overflow/underflow in convolutions.

@@ -360,6 +360,14 @@ impl FlowLM {
             // Get the last position's hidden state
             let last_hidden = step_hidden.squeeze(1)?;  // [1, 1024]
 
+            // DIAGNOSTIC: Log hidden state stats at first step
+            if step == 0 {
+                let h_flat: Vec<f32> = last_hidden.flatten_all()?.to_vec1()?;
+                let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
+                let h_std = (h_flat.iter().map(|x| (x - h_mean).powi(2)).sum::<f32>() / h_flat.len() as f32).sqrt();
+                eprintln!("[FlowLM] step 0 hidden state: mean={:.6}, std={:.4}", h_mean, h_std);
+            }
+
             // Check EOS prediction (but only after min_gen_steps for debugging)
             let eos_logit = self.out_eos.forward(&last_hidden)?;  // [1, 1]
             let eos_val: f32 = eos_logit.squeeze(1)?.to_vec1::<f32>()?[0];

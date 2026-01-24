@@ -1,6 +1,6 @@
 //
 //  PocketTTSSwift.swift
-//  UnaMentis
+//  Pocket TTS
 //
 //  Swift wrapper for the Rust Pocket TTS implementation.
 //  Provides an async/await API for SwiftUI integration.

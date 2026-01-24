@@ -1,6 +1,9 @@
 # Rust build artifacts
 /target/
 
+# Model files (downloaded via scripts/download-model.py)
+/models/
+
 # Cargo lock (optional - some prefer to track this)
 # Cargo.lock
 

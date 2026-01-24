@@ -7,7 +7,7 @@
 use candle_core::{Device, Result, Tensor};
 use candle_nn::{Linear, Module, VarBuilder};
 
-use super::layer_norm::LayerNorm;
+use super::layer_norm::{layer_norm_no_affine, LayerNorm};
 
 /// FlowNet configuration
 #[derive(Debug, Clone)]
@@ -232,12 +232,33 @@ impl FinalLayer {
         // Python order: shift, scale
         let (shift, scale) = self.adaln.forward(cond)?;
 
+        // DIAGNOSTIC: Check shift/scale
+        static DIAG_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let count = DIAG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count < 3 {
+            let shift_flat: Vec<f32> = shift.flatten_all()?.to_vec1()?;
+            let scale_flat: Vec<f32> = scale.flatten_all()?.to_vec1()?;
+            let shift_min = shift_flat.iter().cloned().fold(f32::INFINITY, f32::min);
+            let shift_max = shift_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let scale_min = scale_flat.iter().cloned().fold(f32::INFINITY, f32::min);
+            let scale_max = scale_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            eprintln!("[FinalLayer] shift range=[{:.4}, {:.4}], scale range=[{:.4}, {:.4}]",
+                     shift_min, shift_max, scale_min, scale_max);
+        }
+
         // Python's FinalLayer applies modulation AFTER norm_final (which has no affine)
-        // modulate(norm_final(x), shift, scale) = x * (1 + scale) + shift
-        // But our FinalLayer doesn't have norm_final - we need to add it!
-        // For now, apply modulation directly (may need fix later)
-        let h = x.broadcast_mul(&(scale + 1.0)?)?;
+        // modulate(norm_final(x), shift, scale) = norm(x) * (1 + scale) + shift
+        // norm_final uses eps=1e-6 (typical for layer norm in this codebase)
+        let h = layer_norm_no_affine(x, 1e-6)?;
+        let h = h.broadcast_mul(&(scale + 1.0)?)?;
         let h = h.broadcast_add(&shift)?;
+
+        if count < 3 {
+            let h_flat: Vec<f32> = h.flatten_all()?.to_vec1()?;
+            let h_min = h_flat.iter().cloned().fold(f32::INFINITY, f32::min);
+            let h_max = h_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            eprintln!("[FinalLayer] after modulation: range=[{:.4}, {:.4}]", h_min, h_max);
+        }
 
         // Project to latent
         self.linear.forward(&h)
@@ -402,12 +423,28 @@ impl FlowNet {
 
         // Residual blocks
         let mut h = h;
-        for block in &self.res_blocks {
+        for (i, block) in self.res_blocks.iter().enumerate() {
             h = block.forward(&h, &cond_combined)?;
+            // DIAGNOSTIC: Check for value explosion
+            if s_val < 0.01 && i == 0 {
+                let h_flat: Vec<f32> = h.flatten_all()?.to_vec1()?;
+                let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
+                let h_max = h_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let h_min = h_flat.iter().cloned().fold(f32::INFINITY, f32::min);
+                eprintln!("[FlowNet] after ResBlock 0: mean={:.4}, range=[{:.4}, {:.4}]", h_mean, h_min, h_max);
+            }
         }
 
         // Final layer outputs velocity
-        self.final_layer.forward(&h, &cond_combined)
+        let velocity = self.final_layer.forward(&h, &cond_combined)?;
+        if s_val < 0.01 {
+            let v_flat: Vec<f32> = velocity.flatten_all()?.to_vec1()?;
+            let v_mean = v_flat.iter().sum::<f32>() / v_flat.len() as f32;
+            let v_min = v_flat.iter().cloned().fold(f32::INFINITY, f32::min);
+            let v_max = v_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            eprintln!("[FlowNet] velocity after FinalLayer: mean={:.4}, range=[{:.4}, {:.4}]", v_mean, v_min, v_max);
+        }
+        Ok(velocity)
     }
 
     pub fn config(&self) -> &FlowNetConfig {
