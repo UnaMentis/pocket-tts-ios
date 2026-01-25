@@ -6,6 +6,17 @@ Native iOS implementation of Kyutai Pocket TTS using Rust/Candle.
 
 This crate provides on-device text-to-speech for iOS using the Kyutai Pocket TTS model. It uses the Candle ML framework for inference and UniFFI for Swift bindings.
 
+## Releases
+
+Pre-built XCFrameworks are available on the [Releases](https://github.com/UnaMentis/pocket-tts-ios/releases) page.
+
+Each release includes:
+- `PocketTTS.xcframework` - iOS static library (device + simulator)
+- Swift bindings and wrapper files
+- Integration documentation
+
+See [docs/INTEGRATION.md](docs/INTEGRATION.md) for detailed integration instructions.
+
 ## Architecture
 
 ```
