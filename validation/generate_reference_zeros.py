@@ -28,7 +28,7 @@ torch.nn.init.trunc_normal_ = zeros_trunc_
 from pocket_tts import TTSModel
 
 def main():
-    output_dir = Path("/Users/ramerman/dev/pocket-tts/validation/reference_zeros")
+    output_dir = Path(__file__).parent / "reference_zeros"
     output_dir.mkdir(exist_ok=True)
 
     print("Loading model...")

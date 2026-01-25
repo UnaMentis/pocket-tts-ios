@@ -62,7 +62,7 @@ def main():
     print(f"\nTotal latents captured: {len(ALL_LATENTS)}")
 
     # Save latents
-    output_dir = Path("/Users/ramerman/dev/pocket-tts/validation/reference_zeros")
+    output_dir = Path(__file__).parent / "reference_zeros"
     latents_array = np.array(ALL_LATENTS)  # Shape: [num_latents, 32]
     np.save(output_dir / "python_latents.npy", latents_array)
     print(f"Saved latents to {output_dir / 'python_latents.npy'}")
