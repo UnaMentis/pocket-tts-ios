@@ -79,6 +79,17 @@ const TEST_PHRASES: &[&str] = &[
     "How are you doing today?",
 ];
 
+/// Extended test phrases for longer content validation
+/// These test paragraph-level generation for educational content
+const LONG_TEST_PHRASES: &[&str] = &[
+    // Medium length (~50 tokens, ~8-10 seconds)
+    "The pharmaceutical company Pfizer and actor Arnold Schwarzenegger discussed mRNA vaccines at the café while listening to Tchaikovsky. Scientists believe this breakthrough will revolutionize medicine.",
+    // Paragraph length (~100 tokens, ~15-20 seconds)
+    "Machine learning has transformed the way we approach complex problems. Neural networks, inspired by the human brain, can now recognize images, understand speech, and even generate creative content. The technology continues to evolve rapidly, with new architectures emerging every year. Researchers are particularly excited about transformer models, which have shown remarkable capabilities in natural language processing tasks.",
+    // Multi-sentence educational content (~80 tokens)
+    "The water cycle is a fundamental process in Earth's climate system. Water evaporates from oceans and lakes, rises into the atmosphere, forms clouds, and eventually falls as precipitation. This cycle has been operating for billions of years and is essential for all life on our planet.",
+];
+
 /// Audio statistics for validation
 #[derive(Debug)]
 struct AudioStats {
@@ -161,6 +172,7 @@ fn main() {
     let mut output_path = PathBuf::from("./test_output.wav");
     let mut test_text = String::from("Hello, this is a test of the Pocket TTS system.");
     let mut validation_mode = false;
+    let mut extended_validation = false;
     let mut validation_output_dir = PathBuf::from("./validation/rust_outputs");
     let mut json_report: Option<PathBuf> = None;
     let mut export_latents_path: Option<PathBuf> = None;
@@ -189,6 +201,9 @@ fn main() {
             },
             "--validation-mode" | "-v" => {
                 validation_mode = true;
+            },
+            "--extended" | "-e" => {
+                extended_validation = true;
             },
             "--validation-output" => {
                 if i + 1 < args.len() {
@@ -231,18 +246,27 @@ fn main() {
     if let Some(latents_path) = load_latents_path {
         run_mimi_from_latents(&model_dir, &latents_path, &output_path);
     } else if validation_mode {
-        run_validation_mode(&model_dir, &validation_output_dir, json_report.as_ref().map(|v| &**v));
+        run_validation_mode(&model_dir, &validation_output_dir, json_report.as_ref().map(|v| &**v), extended_validation);
     } else {
         run_single_phrase(&model_dir, &output_path, &test_text, export_latents_path.as_ref().map(|v| &**v));
     }
 }
 
 /// Run validation mode: synthesize all test phrases and create manifest
-fn run_validation_mode(model_dir: &Path, output_dir: &Path, json_report: Option<&Path>) {
+fn run_validation_mode(model_dir: &Path, output_dir: &Path, json_report: Option<&Path>, extended: bool) {
     println!("=== VALIDATION MODE ===\n");
     println!("Model directory: {}", model_dir.display());
     println!("Output directory: {}", output_dir.display());
-    println!("Test phrases: {}\n", TEST_PHRASES.len());
+
+    // Select which phrases to test
+    let test_phrases: Vec<&str> = if extended {
+        println!("Mode: EXTENDED (includes long paragraph tests)\n");
+        TEST_PHRASES.iter().chain(LONG_TEST_PHRASES.iter()).copied().collect()
+    } else {
+        println!("Mode: STANDARD (short phrases only)\n");
+        TEST_PHRASES.to_vec()
+    };
+    println!("Test phrases: {}\n", test_phrases.len());
 
     // Create output directory
     if let Err(e) = fs::create_dir_all(output_dir) {
@@ -259,7 +283,7 @@ fn run_validation_mode(model_dir: &Path, output_dir: &Path, json_report: Option<
     let mut all_healthy = true;
     let mut model = model;
 
-    for (idx, phrase) in TEST_PHRASES.iter().enumerate() {
+    for (idx, phrase) in test_phrases.iter().enumerate() {
         let phrase_id = format!("phrase_{:02}", idx);
         println!("\n--- {} ---", phrase_id);
         println!("Text: \"{}\"", phrase);
@@ -355,7 +379,7 @@ fn run_validation_mode(model_dir: &Path, output_dir: &Path, json_report: Option<
 
     // Final summary
     println!("\n=== VALIDATION SUMMARY ===");
-    println!("Phrases processed: {}/{}", phrase_results.len(), TEST_PHRASES.len());
+    println!("Phrases processed: {}/{}", phrase_results.len(), test_phrases.len());
     if all_healthy {
         println!("Signal health: ✓ ALL HEALTHY");
         println!("\nRun validation/validate.py to compare against Python reference.");
@@ -650,6 +674,7 @@ fn print_usage() {
     println!("  -o, --output PATH          Output WAV file path (default: ./test_output.wav)");
     println!("  -t, --text TEXT            Text to synthesize (default: test phrase)");
     println!("  -v, --validation-mode      Run all test phrases and create manifest");
+    println!("  -e, --extended             Include extended (long paragraph) test phrases");
     println!("  --validation-output PATH   Output dir for validation (default: ./validation/rust_outputs)");
     println!("  --export-latents PATH      Export latents to .npy file (for debugging)");
     println!("  --load-latents PATH        Load pre-saved latents (.f32) and run through Mimi");
