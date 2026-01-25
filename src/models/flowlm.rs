@@ -420,10 +420,10 @@ impl FlowLM {
 
         // Use same defaults as Python reference:
         // - EOS threshold: -4.0 (logit must exceed this to trigger EOS)
-        // - frames_after_eos: 2-3 (generate a few more frames after EOS)
+        // - frames_after_eos: 5 to match Python's 45 frames (EOS at 40 + 5 = 45)
         let eos_threshold = -4.0; // Match Python DEFAULT_EOS_THRESHOLD
-        let frames_after_eos = 3; // Generate a few more frames after EOS detected
-        let min_gen_steps = 40; // Force minimum frames to match Python (~41 frames)
+        let frames_after_eos = 5; // Generate more frames after EOS to match Python (45 total)
+        let min_gen_steps = 40; // Force minimum frames to match Python
 
         let mut all_latents: Vec<Tensor> = Vec::new();
         let mut eos_step: Option<usize> = None;

@@ -16,7 +16,7 @@ pub mod streaming;
 mod tests;
 
 pub use attention::{CausalSelfAttention, MultiHeadAttention};
-pub use conv::{CausalConv1d, Conv1d, ConvTranspose1d, StreamableConv1d, StreamableConvTranspose1d};
+pub use conv::{CausalConv1d, Conv1d, ConvTranspose1d, PadMode, StreamableConv1d, StreamableConvTranspose1d};
 pub use embeddings::{TextEmbedding, VoiceEmbedding};
 pub use flownet::{FlowNet, FlowNetConfig};
 pub use layer_norm::RMSNorm;

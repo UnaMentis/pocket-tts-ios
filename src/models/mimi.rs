@@ -22,13 +22,18 @@ pub struct StreamingConv1dState {
     /// Previous input samples: [batch, in_channels, kernel - stride]
     /// Keeps causal context from previous frames
     pub previous: Tensor,
+    /// Whether this is the first frame (for replicate padding)
+    pub is_first: bool,
 }
 
 impl StreamingConv1dState {
     /// Create new state with zero buffer
     pub fn new(batch_size: usize, in_channels: usize, context_len: usize, device: &Device) -> Result<Self> {
         let previous = Tensor::zeros((batch_size, in_channels, context_len), DType::F32, device)?;
-        Ok(Self { previous })
+        Ok(Self {
+            previous,
+            is_first: true,
+        })
     }
 }
 
@@ -147,12 +152,23 @@ impl Conv1d {
     /// Streaming forward with causal context
     ///
     /// Replicates Python's StreamingConv1d:
-    /// 1. Concatenate previous buffer with current input
-    /// 2. Run the standard conv with no padding
-    /// 3. Store trailing (kernel - stride) samples as new previous buffer
+    /// 1. On first frame with replicate mode, fill previous buffer with first sample
+    /// 2. Concatenate previous buffer with current input
+    /// 3. Run the standard conv with no padding
+    /// 4. Store trailing (kernel - stride) samples as new previous buffer
     fn forward_streaming(&self, x: &Tensor, state: &mut StreamingConv1dState) -> Result<Tensor> {
         // Context length = kernel - stride (for stride=1, this is kernel - 1)
         let context_len = self.kernel_size - self.stride;
+
+        // On first frame, use REPLICATE padding (first sample repeated)
+        // This matches Python's StreamingConv1d with pad_mode="replicate"
+        if state.is_first && context_len > 0 {
+            // Get first sample: [batch, channels, 1]
+            let first_sample = x.narrow(2, 0, 1)?;
+            // Repeat to fill context: [batch, channels, context_len]
+            state.previous = first_sample.repeat(&[1, 1, context_len])?;
+            state.is_first = false;
+        }
 
         // Concatenate previous context with current input
         let x_with_context = Tensor::cat(&[&state.previous, x], 2)?;
@@ -563,24 +579,13 @@ impl DecoderTransformerLayer {
         self.v_cache = Some(v_full.clone());
 
         // Compute attention: Q attends to full K/V cache
-        let kv_len = k_full.dim(2)?;
+        // NOTE: Decoder transformer uses NON-CAUSAL (full) self-attention
+        // Each position can attend to ALL positions in the sequence
         let scale = (self.head_dim as f64).sqrt();
         let attn = q.matmul(&k_full.transpose(2, 3)?)?;
         let attn = (attn / scale)?;
 
-        // Create causal mask: current positions can only attend to past
-        // Q has positions [offset, offset+seq), K has positions [0, kv_len)
-        // Position i in Q (which is at absolute position offset+i) can attend to
-        // positions 0..=(offset+i)
-        let device = attn.device();
-        let mask: Vec<f32> = (0..seq)
-            .flat_map(|i| {
-                let abs_pos = offset + i;
-                (0..kv_len).map(move |j| if j <= abs_pos { 0.0 } else { f32::NEG_INFINITY })
-            })
-            .collect();
-        let attn_mask = Tensor::from_vec(mask, (1, 1, seq, kv_len), device)?;
-        let attn = attn.broadcast_add(&attn_mask)?;
+        // No causal mask - full attention (decoder transformer is non-causal)
         let attn = candle_nn::ops::softmax(&attn, 3)?;
         let attn_out = attn.matmul(&v_full)?;
 
@@ -732,28 +737,30 @@ impl SEANetDecoder {
         self.output_conv.forward(&x)
     }
 
-    /// Streaming forward with ConvTranspose1d overlap-add only
+    /// Streaming forward with full streaming support for all layers
     ///
-    /// Uses batch mode for Conv1d layers but streaming for ConvTranspose1d layers.
-    /// This isolates the ConvTranspose overlap-add behavior.
+    /// Uses streaming mode for ALL convolution layers:
+    /// - Conv1d: causal context buffer
+    /// - ConvTranspose1d: overlap-add state
+    /// - ResBlocks: streaming conv1
     fn forward_streaming(&self, x: &Tensor, state: &mut StreamingSEANetState) -> Result<Tensor> {
         // Input: [batch, 512, seq] (typically seq=16 from upsampler)
-        // Use batch mode for input conv (symmetric padding)
-        let mut x = self.input_conv.forward(x)?;
+        // Use streaming mode for input conv (causal context)
+        let mut x = self.input_conv.forward_streaming(x, &mut state.input_conv_state)?;
         x = x.elu(1.0)?;
 
-        // Upsample through blocks - streaming for ConvTranspose only
+        // Upsample through blocks - streaming for ALL layers
         for (i, (convtr, block)) in self.upsample_blocks.iter().enumerate() {
             x = convtr.forward_streaming(&x, &mut state.convtr_states[i])?;
             if let Some(res_block) = block {
-                // Use batch mode for ResBlock convs
-                x = res_block.forward(&x)?;
+                // Use streaming mode for ResBlock conv1 (conv2 is k=1, no context needed)
+                x = res_block.forward_streaming(&x, &mut state.resblock_states[i])?;
             }
             x = x.elu(1.0)?;
         }
 
-        // Use batch mode for output conv
-        self.output_conv.forward(&x)
+        // Use streaming mode for output conv (causal context)
+        self.output_conv.forward_streaming(&x, &mut state.output_conv_state)
     }
 }
 
@@ -957,19 +964,20 @@ impl MimiDecoder {
             StreamingConvTr1dState::new(batch_size, 64, 4, device)?,  // k=8, s=4 -> overlap=4
         ];
 
-        // ResBlock states (conv1 k=3, context=2 for the hidden channels)
-        // ResBlock 0: 256->128->256
-        // ResBlock 1: 128->64->128
-        // ResBlock 2: 64->32->64
+        // ResBlock states (conv1 k=3, context=2)
+        // Streaming state stores INPUT to conv1, which is the ResBlock input channels
+        // ResBlock 0: 256->128->256, conv1 INPUT = 256 (after ELU)
+        // ResBlock 1: 128->64->128, conv1 INPUT = 128 (after ELU)
+        // ResBlock 2: 64->32->64, conv1 INPUT = 64 (after ELU)
         let resblock_states = [
+            StreamingResBlockState {
+                conv1_state: StreamingConv1dState::new(batch_size, 256, 2, device)?,
+            },
             StreamingResBlockState {
                 conv1_state: StreamingConv1dState::new(batch_size, 128, 2, device)?,
             },
             StreamingResBlockState {
                 conv1_state: StreamingConv1dState::new(batch_size, 64, 2, device)?,
-            },
-            StreamingResBlockState {
-                conv1_state: StreamingConv1dState::new(batch_size, 32, 2, device)?,
             },
         ];
 
@@ -1022,7 +1030,10 @@ impl MimiDecoder {
         // Step 4: Reset transformer KV cache for fresh inference
         self.decoder_transformer.reset_cache();
 
-        // Step 5: Process frame by frame
+        // Step 5: Create SEANet streaming state (must persist across ALL frames)
+        let mut seanet_state = self.init_seanet_state(batch, device)?;
+
+        // Step 6: Process frame by frame
         let mut audio_chunks: Vec<Tensor> = Vec::with_capacity(seq);
 
         for frame_idx in 0..seq {
@@ -1045,10 +1056,9 @@ impl MimiDecoder {
             // 3d. Transpose for SEANet: [batch, 512, 16]
             let x = x.transpose(1, 2)?;
 
-            // 3e. SEANet decoder (using batch mode for now - full streaming would require
-            //     more refactoring to pass streaming state through all layers)
-            //     The key improvement here is the transformer now has proper KV cache
-            let audio = self.seanet.forward(&x)?;
+            // 3e. SEANet decoder with streaming convolutions
+            //     State persists across ALL frames for proper overlap-add accumulation
+            let audio = self.seanet.forward_streaming(&x, &mut seanet_state)?;
 
             if audio.dim(2)? > 0 {
                 audio_chunks.push(audio);
