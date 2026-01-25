@@ -12,6 +12,16 @@ use candle_nn::{
 
 use super::streaming::{StreamTensor, StreamingModule, TensorPadding};
 
+/// Padding mode for streaming convolutions
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PadMode {
+    /// Fill initial context with zeros (default)
+    #[default]
+    Constant,
+    /// Fill initial context with first sample repeated (SEANet style)
+    Replicate,
+}
+
 /// Apply ELU activation function with alpha=1.0
 /// ELU(x) = x if x > 0 else alpha * (exp(x) - 1)
 /// Python SEANet uses nn.ELU(alpha=1.0), NOT GELU
@@ -247,12 +257,14 @@ pub struct StreamableConv1d {
     dilation: usize,
     /// Groups for grouped convolution
     groups: usize,
+    /// Padding mode for first frame
+    pad_mode: PadMode,
 
     // Streaming state
     /// Buffer of previous input samples
     state_prev_xs: Option<Tensor>,
-    /// Whether left padding has been applied (first frame flag)
-    left_pad_applied: bool,
+    /// Whether this is the first frame (for replicate padding)
+    is_first_frame: bool,
 }
 
 impl StreamableConv1d {
@@ -264,6 +276,7 @@ impl StreamableConv1d {
         stride: usize,
         dilation: usize,
         groups: usize,
+        pad_mode: PadMode,
     ) -> Self {
         Self {
             weight,
@@ -272,8 +285,9 @@ impl StreamableConv1d {
             stride,
             dilation,
             groups,
+            pad_mode,
             state_prev_xs: None,
-            left_pad_applied: false,
+            is_first_frame: true,
         }
     }
 
@@ -285,12 +299,21 @@ impl StreamableConv1d {
         stride: usize,
         dilation: usize,
         groups: usize,
+        pad_mode: PadMode,
         vb: VarBuilder,
     ) -> Result<Self> {
         let weight = vb.get((out_channels, in_channels / groups, kernel_size), "weight")?;
         let bias = vb.get(out_channels, "bias").ok();
 
-        Ok(Self::from_weights(weight, bias, kernel_size, stride, dilation, groups))
+        Ok(Self::from_weights(
+            weight,
+            bias,
+            kernel_size,
+            stride,
+            dilation,
+            groups,
+            pad_mode,
+        ))
     }
 
     /// Batch forward (non-streaming, applies symmetric padding)
@@ -343,13 +366,31 @@ impl StreamingModule for StreamableConv1d {
         // Context we need to keep from previous frame
         let context_len = k_eff - self.stride;
 
-        // Apply LEFT pad only on FIRST frame (causal)
-        let xs = if self.left_pad_applied {
+        // Handle first frame padding
+        let xs = if self.is_first_frame && context_len > 0 {
+            self.is_first_frame = false;
+
+            match self.pad_mode {
+                PadMode::Constant => {
+                    // Pad with zeros on left
+                    xs.pad_zeros_left(D::Minus1, context_len)?
+                },
+                PadMode::Replicate => {
+                    // Replicate first sample to fill context
+                    // Get first sample: [B, C, 1]
+                    let first_sample = xs.narrow(D::Minus1, 0, 1)?;
+                    // Repeat it context_len times: [B, C, context_len]
+                    let context = first_sample.repeat(&[1, 1, context_len])?;
+                    // Concatenate: [context | xs]
+                    Tensor::cat(&[&context, &xs], D::Minus1)?
+                },
+            }
+        } else if self.is_first_frame {
+            // First frame but no context needed (context_len == 0)
+            self.is_first_frame = false;
             xs
         } else {
-            self.left_pad_applied = true;
-            // Pad with zeros on left to make the first output correspond to first input
-            xs.pad_zeros_left(D::Minus1, context_len)?
+            xs
         };
 
         // Concatenate with previous context buffer
@@ -395,7 +436,7 @@ impl StreamingModule for StreamableConv1d {
 
     fn reset_state(&mut self) {
         self.state_prev_xs = None;
-        self.left_pad_applied = false;
+        self.is_first_frame = true;
     }
 }
 
@@ -572,7 +613,15 @@ mod streaming_tests {
         let weight = Tensor::randn(0f32, 1., (out_ch, in_ch, kernel), &device)?;
         let bias = Tensor::randn(0f32, 1., out_ch, &device)?;
 
-        let conv = StreamableConv1d::from_weights(weight.clone(), Some(bias.clone()), kernel, stride, dilation, 1);
+        let conv = StreamableConv1d::from_weights(
+            weight.clone(),
+            Some(bias.clone()),
+            kernel,
+            stride,
+            dilation,
+            1,
+            PadMode::Constant,
+        );
 
         // Create input
         let input = Tensor::randn(0f32, 1., (1, in_ch, 10), &device)?;
@@ -580,8 +629,9 @@ mod streaming_tests {
         // Batch causal forward (reference)
         let batch_out = conv.forward_causal(&input)?;
 
-        // Streaming frame-by-frame
-        let mut conv_streaming = StreamableConv1d::from_weights(weight, Some(bias), kernel, stride, dilation, 1);
+        // Streaming frame-by-frame (with Constant mode to match zero-padded batch)
+        let mut conv_streaming =
+            StreamableConv1d::from_weights(weight, Some(bias), kernel, stride, dilation, 1, PadMode::Constant);
 
         let mut outputs = vec![];
         for i in 0..10 {

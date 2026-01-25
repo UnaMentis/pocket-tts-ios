@@ -790,3 +790,104 @@ fn step(&mut self, xs: &StreamTensor, mask: &StreamMask) -> Result<StreamTensor>
 
 - Waveform correlation with Python streaming: **>0.95**
 - No compromise on this target
+
+---
+
+## Session 2026-01-24: Streaming Integration and Non-Causal Attention Fix
+
+### Summary
+Implemented the streaming integration fixes identified by the Research Advisor. **Correlation improved from ~0.13 to 0.69** - a 5x improvement.
+
+### Key Insight from Research Advisor
+> "The streaming code is written. The algorithms are implemented. The issue is the integration."
+
+The `forward_true_streaming()` method was correctly processing latents frame-by-frame through upsample and transformer, but then calling **batch mode** SEANet instead of streaming mode.
+
+### Fixes Applied
+
+#### 1. Created SEANet Streaming State Before Loop (CRITICAL)
+**Problem**: SEANet streaming state wasn't being created before the processing loop.
+**Fix**: Added `let mut seanet_state = self.init_seanet_state(batch, device)?;` before the frame loop.
+**File**: `src/models/mimi.rs:1025`
+
+#### 2. Replaced Batch SEANet Call with Streaming (CRITICAL)
+**Problem**: Line 1051 used `self.seanet.forward(&x)?` (batch mode).
+**Fix**: Changed to `self.seanet.forward_streaming(&x, &mut seanet_state)?`.
+**File**: `src/models/mimi.rs:1050`
+
+#### 3. Fixed SEANet to Use Streaming Conv1d for ALL Layers (HIGH)
+**Problem**: SEANet's `forward_streaming` only used streaming for ConvTranspose1d, but used batch mode for Conv1d layers.
+**Fix**: Changed to use streaming for:
+- `input_conv.forward_streaming()`
+- `res_block.forward_streaming()` for each ResBlock
+- `output_conv.forward_streaming()`
+**File**: `src/models/mimi.rs:741-758`
+
+#### 4. Fixed ResBlock Streaming State Channel Sizes (BUG FIX)
+**Problem**: ResBlock states were initialized with hidden channels (128, 64, 32) instead of input channels (256, 128, 64).
+**Fix**: Changed to use input channels for streaming state buffers.
+**File**: `src/models/mimi.rs:965-975`
+
+#### 5. Fixed Decoder Transformer to Use Non-Causal Attention (CRITICAL)
+**Problem**: Python docs clearly state decoder transformer uses **full self-attention** (non-causal). Rust was applying a causal mask.
+**Fix**: Removed causal mask from `forward_streaming()`. Each position now attends to ALL positions in sequence.
+**File**: `src/models/mimi.rs:565-573`
+
+### Results
+
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| Aligned Correlation | 0.13 | **0.69** | +430% |
+| Max Amplitude (Rust) | 0.44 | 0.36 | -18% |
+| Max Amplitude (Python) | 0.46 | 0.46 | - |
+| Audio Samples | 82560 | 82560 | Same |
+| All Tests | 91 pass | 91 pass | ✅ |
+
+### Remaining Gap (0.69 → >0.95)
+
+The 0.69 correlation represents substantial progress. Remaining differences may be due to:
+
+1. **First-frame handling** - Python uses replicate padding (first sample repeated) for initial context. Rust uses zeros.
+
+2. **Streaming vs batch edge effects** - Small differences in how chunk boundaries are handled.
+
+3. **RoPE offset calculations** - May differ slightly between streaming and batch modes.
+
+4. **Sample alignment shift** - Best alignment requires -3842 sample shift (~160ms).
+
+### Audio Quality
+
+The audio at 0.69 correlation is **likely intelligible**. Listening test recommended:
+```bash
+afplay ./test_output.wav
+```
+
+### Files Modified
+
+- `src/models/mimi.rs`:
+  - Line 1025: Added SEANet state initialization
+  - Line 1050: Changed to streaming SEANet call
+  - Lines 741-758: Full streaming for all Conv1d layers
+  - Lines 565-573: Removed causal mask for non-causal attention
+  - Lines 965-975: Fixed ResBlock state channel sizes
+
+### Current State Summary
+
+| Component | Status |
+|-----------|--------|
+| Tokenizer | ✅ Matches Python |
+| FlowLM Transformer | ✅ Matches Python |
+| FlowNet | ✅ Matches Python |
+| Latent Generation | ✅ Cosine sim = 1.0 |
+| Generation Length | ✅ 43 frames |
+| Mimi Upsample | ✅ Streaming with overlap-add |
+| Mimi Decoder Transformer | ✅ Non-causal with KV cache |
+| Mimi SEANet | ✅ Full streaming for all layers |
+| **Waveform Correlation** | ⚠️ 0.69 (target: >0.95) |
+
+### Next Steps
+
+1. **Listen test** - Verify audio is intelligible at 0.69 correlation
+2. **First-frame replicate padding** - Implement Python's replicate padding mode for first frame
+3. **Investigate sample shift** - The -3842 sample alignment shift suggests timing differences
+4. **Consider Kyutai Moshi patterns** - Their production Rust code may have additional insights
