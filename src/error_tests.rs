@@ -68,7 +68,7 @@ mod tests {
         match pocket_error {
             PocketTTSError::IoError(msg) => {
                 assert!(msg.contains("file not found"));
-            }
+            },
             _ => panic!("Expected IoError variant"),
         }
     }

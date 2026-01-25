@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{TTSConfig, PocketVoiceInfo, ModelManifest};
+    use crate::config::{ModelManifest, PocketVoiceInfo, TTSConfig};
 
     #[test]
     fn test_default_config() {

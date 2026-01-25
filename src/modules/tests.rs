@@ -2,8 +2,8 @@
 
 #[cfg(test)]
 mod layer_norm_tests {
-    use candle_core::{Device, Tensor};
     use crate::modules::layer_norm::RMSNorm;
+    use candle_core::{Device, Tensor};
 
     #[test]
     fn test_rms_norm_output_shape() {
@@ -34,8 +34,8 @@ mod layer_norm_tests {
 
 #[cfg(test)]
 mod rotary_tests {
-    use candle_core::{Device, Tensor};
     use crate::modules::rotary::RotaryEmbedding;
+    use candle_core::{Device, Tensor};
 
     #[test]
     fn test_rotary_embedding_creation() {
@@ -132,8 +132,8 @@ mod mlp_tests {
 
 #[cfg(test)]
 mod embedding_tests {
+    use crate::modules::embeddings::{VoiceBank, VoiceEmbedding};
     use candle_core::{Device, Tensor};
-    use crate::modules::embeddings::{VoiceEmbedding, VoiceBank};
 
     #[test]
     fn test_voice_embedding_from_tensor() {
@@ -182,8 +182,8 @@ mod conv_tests {
 
     #[test]
     fn test_conv_types_exist() {
-        use crate::modules::conv::{Conv1d, CausalConv1d, ConvTranspose1d};
-        use crate::modules::conv::{SEANetEncoderBlock, SEANetDecoderBlock};
+        use crate::modules::conv::{CausalConv1d, Conv1d, ConvTranspose1d};
+        use crate::modules::conv::{SEANetDecoderBlock, SEANetEncoderBlock};
 
         // Type checking - these should compile
         let _: fn() -> Option<Conv1d> = || None;

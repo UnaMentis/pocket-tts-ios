@@ -1,7 +1,7 @@
 //! Rotary Position Embeddings (RoPE)
 //!
 //! Portions of this file derived from:
-//! https://github.com/babybirdprd/pocket-tts
+//! <https://github.com/babybirdprd/pocket-tts>
 //! Licensed under MIT
 
 use candle_core::{Device, Result, Tensor};
@@ -11,6 +11,7 @@ use candle_core::{Device, Result, Tensor};
 pub struct RotaryEmbedding {
     cos_cache: Tensor,
     sin_cache: Tensor,
+    #[allow(dead_code)] // Stored for future use in cache invalidation
     dim: usize,
     max_seq_len: usize,
 }
@@ -30,9 +31,7 @@ impl RotaryEmbedding {
 
     fn compute_inv_freq(dim: usize, base: f32, device: &Device) -> Result<Tensor> {
         let half_dim = dim / 2;
-        let inv_freq: Vec<f32> = (0..half_dim)
-            .map(|i| 1.0 / base.powf(2.0 * i as f32 / dim as f32))
-            .collect();
+        let inv_freq: Vec<f32> = (0..half_dim).map(|i| 1.0 / base.powf(2.0 * i as f32 / dim as f32)).collect();
 
         Tensor::from_vec(inv_freq, (half_dim,), device)
     }
@@ -86,8 +85,8 @@ impl RotaryEmbedding {
         let x = x.reshape((batch, seq, heads, half_dim, 2))?;
 
         // Extract real (even indices) and imaginary (odd indices) components
-        let xr = x.narrow(4, 0, 1)?.squeeze(4)?;  // [batch, seq, heads, half_dim]
-        let xi = x.narrow(4, 1, 1)?.squeeze(4)?;  // [batch, seq, heads, half_dim]
+        let xr = x.narrow(4, 0, 1)?.squeeze(4)?; // [batch, seq, heads, half_dim]
+        let xi = x.narrow(4, 1, 1)?.squeeze(4)?; // [batch, seq, heads, half_dim]
 
         // cos/sin have shape [seq, half_dim]
         // Reshape to [1, seq, 1, half_dim] for broadcasting with [batch, seq, heads, half_dim]
@@ -99,9 +98,9 @@ impl RotaryEmbedding {
         let rotated_i = (xr.broadcast_mul(&sin)? + xi.broadcast_mul(&cos)?)?;
 
         // Stack back to interleaved format: [(r0,i0), (r1,i1), ...]
-        let rotated_r = rotated_r.unsqueeze(4)?;  // [batch, seq, heads, half_dim, 1]
-        let rotated_i = rotated_i.unsqueeze(4)?;  // [batch, seq, heads, half_dim, 1]
-        let stacked = Tensor::cat(&[&rotated_r, &rotated_i], 4)?;  // [batch, seq, heads, half_dim, 2]
+        let rotated_r = rotated_r.unsqueeze(4)?; // [batch, seq, heads, half_dim, 1]
+        let rotated_i = rotated_i.unsqueeze(4)?; // [batch, seq, heads, half_dim, 1]
+        let stacked = Tensor::cat(&[&rotated_r, &rotated_i], 4)?; // [batch, seq, heads, half_dim, 2]
 
         // Reshape back to [batch, seq, heads, head_dim]
         stacked.reshape((batch, seq, heads, head_dim))

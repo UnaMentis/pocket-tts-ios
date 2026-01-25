@@ -124,3 +124,12 @@ These are generated test outputs. **Verify:** Should these be in .gitignore inst
    - `validation/dump_attention.py` (or fix paths if keeping)
 
 4. **Run `cargo fix`** - Fixes the unused import automatically.
+
+---
+
+## Cleanup Activity Log
+
+### 2026-01-24
+- **Ran `cargo fix`** - Removed unused `RMSNorm` import from `src/models/flowlm.rs`
+- **Skipped unused fields** - `kernel_size` (mimi.rs) and `dim` (rotary.rs) left as-is; likely needed for future use
+- **Skipped debug statements** - Porting still active; keeping diagnostics per report recommendation

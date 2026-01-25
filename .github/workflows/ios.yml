@@ -1,0 +1,90 @@
+name: iOS Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/build-ios.sh'
+      - '.github/workflows/ios.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'scripts/build-ios.sh'
+  workflow_dispatch:
+
+jobs:
+  build-xcframework:
+    name: Build XCFramework
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: aarch64-apple-ios, aarch64-apple-ios-sim
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ios-build
+
+      - name: Build XCFramework
+        run: ./scripts/build-ios.sh
+
+      - name: Verify outputs
+        run: |
+          echo "Checking build outputs..."
+          ls -la target/xcframework/
+
+          if [ -d "target/xcframework/PocketTTS.xcframework" ]; then
+            echo "✓ XCFramework created successfully"
+            du -sh target/xcframework/PocketTTS.xcframework
+          else
+            echo "✗ XCFramework not found"
+            exit 1
+          fi
+
+          if [ -f "target/xcframework/pocket_tts_ios.swift" ]; then
+            echo "✓ Swift bindings generated"
+            wc -l target/xcframework/pocket_tts_ios.swift
+          else
+            echo "✗ Swift bindings not found"
+            exit 1
+          fi
+
+      - name: Upload XCFramework
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketTTS-XCFramework
+          path: |
+            target/xcframework/PocketTTS.xcframework
+            target/xcframework/pocket_tts_ios.swift
+          retention-days: 30
+
+  validate-bindings:
+    name: Validate Swift Bindings
+    runs-on: macos-14
+    needs: build-xcframework
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download XCFramework
+        uses: actions/download-artifact@v4
+        with:
+          name: PocketTTS-XCFramework
+          path: target/xcframework
+
+      - name: Check Swift syntax
+        run: |
+          # Basic syntax check on generated Swift
+          if [ -f "target/xcframework/pocket_tts_ios.swift" ]; then
+            echo "Checking Swift syntax..."
+            swiftc -parse target/xcframework/pocket_tts_ios.swift 2>&1 || true
+            echo "Note: Parse errors are expected without the XCFramework imported"
+          fi

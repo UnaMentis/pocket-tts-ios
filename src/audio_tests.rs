@@ -3,8 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::audio::{
-        samples_to_bytes, bytes_to_samples, normalize, duration_seconds,
-        samples_to_wav, SAMPLE_RATE, CHANNELS,
+        bytes_to_samples, duration_seconds, normalize, samples_to_bytes, samples_to_wav, CHANNELS, SAMPLE_RATE,
     };
 
     #[test]

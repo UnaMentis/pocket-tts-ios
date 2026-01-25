@@ -1,0 +1,30 @@
+# Rustfmt configuration for Pocket TTS iOS
+# Using only stable options (Rust 2021 edition)
+
+edition = "2021"
+
+# Line width - generous for ML code with long tensor operations
+max_width = 120
+
+# Use field init shorthand
+use_field_init_shorthand = true
+
+# Keep consistent spacing in match arms
+match_block_trailing_comma = true
+
+# Force multiline for function signatures over threshold
+fn_call_width = 80
+
+# Chain formatting (important for Candle tensor operations)
+chain_width = 80
+
+# Reorder imports
+reorder_imports = true
+
+# Note: The following options require nightly rustfmt:
+# - imports_granularity = "Crate"
+# - group_imports = "StdExternalCrate"
+# - wrap_comments = false
+# - normalize_doc_attributes = true
+# - fn_params_layout = "Tall"
+# - struct_lit_single_line = true

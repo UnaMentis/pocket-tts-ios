@@ -28,8 +28,9 @@ impl PocketTokenizer {
 
     /// Load tokenizer from bytes (for bundled models)
     pub fn from_bytes(data: &[u8]) -> Result<Self, PocketTTSError> {
-        let processor = SentencePieceProcessor::from_serialized_proto(data)
-            .map_err(|e| PocketTTSError::TokenizationFailed(format!("Failed to load SentencePiece from bytes: {}", e)))?;
+        let processor = SentencePieceProcessor::from_serialized_proto(data).map_err(|e| {
+            PocketTTSError::TokenizationFailed(format!("Failed to load SentencePiece from bytes: {}", e))
+        })?;
 
         Ok(Self { processor })
     }
@@ -38,7 +39,9 @@ impl PocketTokenizer {
     /// Uses SentencePiece BPE/Unigram tokenization for proper subword tokens
     pub fn encode(&self, text: &str) -> Result<Vec<u32>, PocketTTSError> {
         // SentencePiece encode returns PieceWithId, we need to extract the IDs
-        let pieces = self.processor.encode(text)
+        let pieces = self
+            .processor
+            .encode(text)
             .map_err(|e| PocketTTSError::TokenizationFailed(format!("Encoding failed: {}", e)))?;
 
         // Convert to u32 IDs
@@ -49,7 +52,9 @@ impl PocketTokenizer {
 
     /// Decode token IDs back to text
     pub fn decode(&self, ids: &[u32]) -> Result<String, PocketTTSError> {
-        let text = self.processor.decode_piece_ids(ids)
+        let text = self
+            .processor
+            .decode_piece_ids(ids)
             .map_err(|e| PocketTTSError::TokenizationFailed(format!("Decoding failed: {}", e)))?;
 
         Ok(text)

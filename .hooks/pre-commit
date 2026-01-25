@@ -1,0 +1,107 @@
+#!/bin/bash
+#
+# Pre-commit hook for Pocket TTS iOS
+#
+# Runs:
+# 1. rustfmt - Code formatting
+# 2. clippy - Linting with strict warnings
+# 3. gitleaks - Secrets detection
+# 4. Quick tests - Fast unit tests
+#
+# Bypass with: git commit --no-verify (logged for audit)
+
+set -e
+
+HOOK_LOG_DIR="$HOME/.pocket-tts/hook-logs"
+mkdir -p "$HOOK_LOG_DIR"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log_hook() {
+    local status="$1"
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local branch=$(git branch --show-current 2>/dev/null || echo "unknown")
+    local user=$(whoami)
+    echo "$timestamp|pre-commit|$status|$branch|$user|$$" >> "$HOOK_LOG_DIR/hook-audit.log"
+
+    # Rotate log at 1MB
+    if [ -f "$HOOK_LOG_DIR/hook-audit.log" ]; then
+        local size
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            size=$(stat -f%z "$HOOK_LOG_DIR/hook-audit.log" 2>/dev/null || echo 0)
+        else
+            size=$(stat -c%s "$HOOK_LOG_DIR/hook-audit.log" 2>/dev/null || echo 0)
+        fi
+        if [ "$size" -gt 1048576 ]; then
+            mv "$HOOK_LOG_DIR/hook-audit.log" "$HOOK_LOG_DIR/hook-audit.log.old"
+        fi
+    fi
+}
+
+log_hook "STARTED"
+
+echo -e "${YELLOW}Running pre-commit checks...${NC}"
+echo ""
+
+# Get staged Rust files
+STAGED_RS=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' || true)
+
+if [ -z "$STAGED_RS" ]; then
+    echo -e "${GREEN}No Rust files staged, skipping Rust checks${NC}"
+else
+    # Check 1: rustfmt
+    echo -e "${YELLOW}[1/4] Checking formatting (rustfmt)...${NC}"
+    if ! cargo fmt --check 2>/dev/null; then
+        echo -e "${RED}❌ Formatting errors detected${NC}"
+        echo "Run: cargo fmt"
+        log_hook "FAILED:rustfmt"
+        exit 1
+    fi
+    echo -e "${GREEN}✓ Formatting OK${NC}"
+
+    # Check 2: clippy
+    echo -e "${YELLOW}[2/4] Running linter (clippy)...${NC}"
+    if ! cargo clippy --all-targets --all-features -- -D warnings 2>/dev/null; then
+        echo -e "${RED}❌ Clippy warnings detected${NC}"
+        log_hook "FAILED:clippy"
+        exit 1
+    fi
+    echo -e "${GREEN}✓ Linting OK${NC}"
+fi
+
+# Check 3: gitleaks (secrets detection)
+echo -e "${YELLOW}[3/4] Scanning for secrets (gitleaks)...${NC}"
+if command -v gitleaks &> /dev/null; then
+    if ! gitleaks protect --staged --no-banner 2>/dev/null; then
+        echo -e "${RED}❌ Potential secrets detected!${NC}"
+        echo "Review the files above and remove any secrets."
+        log_hook "FAILED:gitleaks"
+        exit 1
+    fi
+    echo -e "${GREEN}✓ No secrets detected${NC}"
+else
+    echo -e "${YELLOW}⚠ gitleaks not installed, skipping secrets scan${NC}"
+    echo "  Install with: brew install gitleaks"
+fi
+
+# Check 4: Quick tests (if Rust files changed)
+if [ -n "$STAGED_RS" ]; then
+    echo -e "${YELLOW}[4/4] Running quick tests...${NC}"
+    if ! cargo test --lib --quiet 2>/dev/null; then
+        echo -e "${RED}❌ Tests failed${NC}"
+        log_hook "FAILED:tests"
+        exit 1
+    fi
+    echo -e "${GREEN}✓ Tests passed${NC}"
+else
+    echo -e "${YELLOW}[4/4] Skipping tests (no Rust changes)${NC}"
+fi
+
+echo ""
+echo -e "${GREEN}All pre-commit checks passed!${NC}"
+log_hook "PASSED"
+exit 0

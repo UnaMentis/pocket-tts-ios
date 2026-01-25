@@ -69,3 +69,35 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+# =============================================================================
+# Linting Configuration
+# =============================================================================
+
+[lints.rust]
+# Allow unsafe code - required for FFI (UniFFI) and mmap operations
+unsafe_code = "allow"
+
+[lints.clippy]
+# Correctness - always fix these
+correctness = { level = "deny", priority = -1 }
+
+# Suspicious patterns - warn
+suspicious = { level = "warn", priority = -1 }
+
+# Performance issues - warn
+perf = { level = "warn", priority = -1 }
+
+# Style - warn (not deny)
+style = { level = "warn", priority = -1 }
+
+# Complexity - allow for ML code (complex operations are inherent)
+complexity = { level = "allow", priority = -1 }
+
+# Pedantic - too strict for existing codebase, disable
+pedantic = { level = "allow", priority = -1 }
+
+# Development markers - warn so we catch them
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"

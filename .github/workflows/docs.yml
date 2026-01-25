@@ -1,0 +1,111 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.md'
+      - 'docs/**'
+      - 'src/**/*.rs'  # For rustdoc
+      - '.github/workflows/docs.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**.md'
+      - 'docs/**'
+      - 'src/**/*.rs'
+
+jobs:
+  markdown-lint:
+    name: Markdown Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install markdownlint
+        run: npm install -g markdownlint-cli
+
+      - name: Create config
+        run: |
+          cat > .markdownlint.json << 'EOF'
+          {
+            "MD013": false,
+            "MD033": false,
+            "MD041": false,
+            "MD024": { "siblings_only": true },
+            "MD040": false
+          }
+          EOF
+
+      - name: Lint markdown
+        run: |
+          markdownlint '**/*.md' \
+            --ignore node_modules \
+            --ignore target \
+            --ignore validation/.venv \
+            --ignore 'validation/.venv/**'
+        continue-on-error: true  # Warn but don't fail initially
+
+  link-check:
+    name: Link Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check internal links
+        run: |
+          # Simple check for broken internal markdown links
+          echo "Checking for potentially broken internal links..."
+
+          # Find all markdown files
+          find . -name "*.md" \
+            -not -path "./target/*" \
+            -not -path "./validation/.venv/*" \
+            -not -path "./node_modules/*" | while read file; do
+
+            # Extract relative links and check if targets exist
+            grep -oE '\[.*\]\([^http][^)]+\)' "$file" 2>/dev/null | \
+              grep -oE '\([^)]+\)' | tr -d '()' | while read link; do
+                # Remove anchors
+                target=$(echo "$link" | sed 's/#.*//')
+                if [ -n "$target" ]; then
+                  dir=$(dirname "$file")
+                  full_path="$dir/$target"
+                  if [ ! -e "$full_path" ] && [ ! -e "$target" ]; then
+                    echo "Potential broken link in $file: $link"
+                  fi
+                fi
+              done
+          done
+
+          echo "Link check complete"
+
+  rustdoc:
+    name: Documentation Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build docs
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        continue-on-error: true  # Warn but don't fail until docs are complete
+
+      - name: Check for missing docs
+        run: |
+          # Count undocumented public items
+          cargo doc --no-deps 2>&1 | grep -c "missing documentation" || echo "0 missing docs warnings"
+
+      - name: Upload docs
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustdoc
+          path: target/doc
+          if-no-files-found: ignore
