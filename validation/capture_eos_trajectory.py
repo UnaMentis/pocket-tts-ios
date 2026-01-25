@@ -56,7 +56,7 @@ def hook_eos_logits(model, text: str, voice: str = "alba") -> Dict:
     tts_model = TTSModel.load_model()
 
     # Find the out_eos layer
-    flow_lm = tts_model._model._flow_lm
+    flow_lm = tts_model.flow_lm
     out_eos = flow_lm.out_eos
 
     # Register hook
