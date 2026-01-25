@@ -32,17 +32,17 @@ cd "$PROJECT_DIR"
 
 # Configure CMake for iOS cross-compilation with sentencepiece-sys:
 # - CMAKE_GENERATOR=Xcode enables Xcode-specific CMake functions
-# - CMAKE_PROJECT_INCLUDE_BEFORE injects our init script to define set_xcode_property
-#   (this function is used by sentencepiece but not defined when cross-compiling)
+# - CMAKE_TOOLCHAIN_FILE provides set_xcode_property function that sentencepiece needs
+#   (cmake-rs doesn't use sentencepiece's bundled ios.toolchain.cmake)
 export CMAKE_GENERATOR=Xcode
-export CMAKE_PROJECT_INCLUDE_BEFORE="$PROJECT_DIR/cmake/ios-init.cmake"
+export CMAKE_TOOLCHAIN_FILE="$PROJECT_DIR/cmake/ios-device.toolchain.cmake"
 
 cargo build --release --target aarch64-apple-ios
 
 # Build for iOS simulator (arm64)
 echo ""
 echo "Building for iOS simulator (aarch64-apple-ios-sim)..."
-# CMAKE_GENERATOR and CMAKE_PROJECT_INCLUDE_BEFORE already exported above
+export CMAKE_TOOLCHAIN_FILE="$PROJECT_DIR/cmake/ios-simulator.toolchain.cmake"
 cargo build --release --target aarch64-apple-ios-sim
 
 # Generate Swift bindings
