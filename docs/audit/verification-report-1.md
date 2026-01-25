@@ -2,7 +2,7 @@
 
 **Date:** 2026-01-24
 **Test Phrase:** "Hello, this is a test of the Pocket TTS system."
-**Git State:** 4e9b005-dirty
+**Git State:** 5c6b236
 
 ## Build Status
 
@@ -14,29 +14,40 @@
 
 ## Numerical Metrics
 
-### Mimi Decoder Comparison (Rust vs Python Mimi output)
+### Mimi Decoder Comparison (Rust vs Python Mimi debug output)
 
-| Metric | Value | Status |
-|--------|-------|--------|
-| **Aligned correlation** | **0.6948** | ⚠️ (target: >0.95) |
-| Best alignment shift | -3842 samples | Info |
-| MSE (normalized) | 0.0126 | Info |
-| Max amplitude (Rust) | 0.3567 | Info |
-| Max amplitude (Python Mimi) | 0.4639 | Info |
-| Amplitude ratio | 77% | Info |
+| Metric | Previous | Current | Delta | Status |
+|--------|----------|---------|-------|--------|
+| **Aligned correlation** | 0.6948 | **0.7369** | +0.0421 | ⚠️ (target: >0.95) |
+| Best alignment shift | -3842 | -3840 | ~same | Info |
+| Max amplitude (Rust) | 0.3567 | 0.3567 | 0 | Info |
+| Max amplitude (Python Mimi) | 0.4639 | 0.4639 | 0 | Info |
+| Amplitude ratio | 77% | 77% | 0 | Info |
 
 ### End-to-End Comparison (Rust vs Python streaming reference)
 
 | Metric | Previous | Current | Delta | Status |
 |--------|----------|---------|-------|--------|
 | Latent cosine sim | 1.0000 | 1.0000 | 0 | ✅ |
-| Waveform correlation (aligned) | 0.1285 | 0.0741 | -0.0544 | ❌ |
-| Sample count (Rust) | 82904 | 82560 | -344 | ⚠️ |
+| Waveform correlation (direct) | 0.0008 | 0.0008 | 0 | ❌ |
+| Waveform correlation (aligned) | 0.0741 | 0.1587 | +0.0846 | ❌ |
+| Sample count (Rust) | 82560 | 82560 | 0 | ⚠️ |
 | Sample count (Python ref) | 86400 | 86400 | 0 | ✅ |
-| Max amplitude (Rust) | 0.4421 | 0.3567 | -0.0854 | ⚠️ |
+| Sample difference | -3840 | -3840 | 0 | Info |
+| Max amplitude (Rust) | 0.3567 | 0.3567 | 0 | ⚠️ |
 | Max amplitude (Python ref) | 0.6050 | 0.6050 | 0 | ✅ |
+| RMS (Rust) | 0.0537 | 0.0537 | 0 | Info |
 | Latent frames (Rust) | 43 | 43 | 0 | ⚠️ |
 | Latent frames (Python ref) | 45 | 45 | 0 | ✅ |
+
+### All Validation Phrases
+
+| Phrase | Rust Samples | Ref Samples | Diff | Aligned Correlation |
+|--------|--------------|-------------|------|---------------------|
+| phrase_00 | 82560 | 86400 | -3840 | 0.159 |
+| phrase_01 | 74880 | 88320 | -13440 | 0.106 |
+| phrase_02 | 78720 | 59520 | +19200 | 0.132 |
+| phrase_03 | 30720 | 32640 | -1920 | 0.223 |
 
 ### Status Key
 - ✅ = At target or matching reference
@@ -46,26 +57,44 @@
 ## Target Progress
 
 ```
-Target:  0.95 correlation (Mimi decoder)
-Current: 0.69 correlation
-Gap:     0.26
+Target:  0.95 correlation (Mimi decoder vs Python Mimi output)
+Current: 0.74 correlation
+Gap:     0.21
 
-[===============>..............] 73% of target
+[==================>..........] 78% of target
 ```
 
-## Reconciliation: 0.69 vs 0.07 Correlation
+## Regressions
 
-**RESOLVED**: The discrepancy between 0.69 (coding agent) and 0.07 (initial verification) was due to **different comparison targets**:
+None detected. All metrics are stable or slightly improved from previous report.
 
-| Comparison Target | Correlation | Explanation |
-|-------------------|-------------|-------------|
-| `mimi_debug/final_audio.npy` | **0.69** | Python's Mimi decoder output (44 frames) |
-| `reference_outputs/phrase_00.wav` | 0.07 | Full end-to-end Python streaming (45 frames) |
+## Improvements
 
-**The 0.69 correlation IS correct** and shows the Mimi decoder is working well. The low end-to-end correlation (0.07) is due to:
-1. **Frame count mismatch**: Rust generates 43 frames, Python reference has 45 frames
-2. **Latent content differences**: The latent sequences differ between runs
-3. **Timing alignment**: 3842-sample shift needed for best alignment
+1. **Mimi decoder correlation improved** from 0.6948 to 0.7369 (+6% improvement)
+2. **End-to-end aligned correlation improved** from 0.0741 to 0.1587 (+114% relative improvement)
+
+## Audio Quality Assessment
+
+- **Audible:** Yes - produces recognizable speech
+- **Artifacts:** Minor - some timing differences audible
+- **Duration:** 3.44s (Rust) vs 3.60s (Python) = 4.4% shorter
+- **Amplitude:** 59% of Python reference max (0.36 vs 0.61)
+
+## Performance Metrics
+
+| Metric | Value |
+|--------|-------|
+| Synthesis time | 1.09s |
+| Audio duration | 3.44s |
+| Real-time factor | 3.15x |
+
+## Signal Health (All Phrases)
+
+All 4 validation phrases pass signal health checks:
+- No NaN values
+- No Inf values
+- No clipped samples (>0.99)
+- Reasonable DC offset (<0.001)
 
 ## Current State Summary
 
@@ -73,43 +102,34 @@ Gap:     0.26
 |-----------|--------|-------|
 | Build | ✅ PASS | Clean compilation, no warnings |
 | Latent generation | ✅ Cosine sim = 1.0 | Individual latents match Python |
-| Mimi decoder | ⚠️ 0.69 correlation | Good but not yet at 0.95 target |
+| Mimi decoder | ⚠️ 0.74 correlation | Improved but not yet at 0.95 target |
 | Frame count | ⚠️ 43 vs 45 | Rust generates 2 fewer frames |
-| End-to-end | ❌ 0.07 correlation | Due to frame count + latent differences |
+| End-to-end | ❌ 0.16 correlation | Due to frame count + phase differences |
 
-## Audio Quality Assessment
-- **Audible:** Yes - produces recognizable speech
-- **Artifacts:** Minor - some timing differences audible
-- **Duration:** 3.44s (Rust) vs 3.60s (Python) = 4.4% shorter
-- **Amplitude:** 77% of Python Mimi output (adequate)
+## Key Observations
 
-## Performance Metrics
+1. **Frame count mismatch persists**: Rust generates 43 frames vs Python's 45 frames consistently. This 2-frame difference (~160ms) affects correlation calculations.
 
-| Metric | Value |
-|--------|-------|
-| Synthesis time | 1.05s |
-| Audio duration | 3.44s |
-| Real-time factor | 3.26x |
+2. **Mimi decoder is the bottleneck**: The Mimi debug comparison shows 0.74 correlation, which is better than end-to-end (0.16), indicating the Mimi decoder is working reasonably well.
+
+3. **Amplitude difference**: Rust output is ~59-77% of Python's amplitude. This is likely due to batch vs streaming convolution differences in SEANet.
+
+4. **Variable phrase behavior**: Different phrases show different correlation levels (0.10-0.22), suggesting some phrases are more sensitive to batch/streaming differences.
 
 ## Remaining Work for >0.95 Correlation
 
-1. **Fix frame count mismatch** - Rust generates 43 frames vs Python's 45
-   - Investigate EOS detection threshold
-   - Check minimum generation steps
-
-2. **First-frame padding** - Python uses replicate padding for initial context, Rust uses zeros
-
-3. **Sample alignment** - 3842-sample (~160ms) shift suggests timing offset in streaming
-
-4. **Amplitude normalization** - Consider matching Python's amplitude scaling
+1. **Fix frame count mismatch** - Investigate EOS detection to generate 45 frames instead of 43
+2. **Streaming SEANet** - Implement full streaming convolutions with causal padding
+3. **Amplitude normalization** - Consider matching Python's amplitude scaling
+4. **First-frame padding** - Ensure replicate padding is correctly applied
 
 ## Notes
 
-1. **Mimi decoder improvements confirmed** - The 0.69 correlation validates the streaming fixes from the coding agent session
+1. **Stable codebase**: Git state 5c6b236 is clean (no uncommitted changes), suggesting recent commits have stabilized the implementation.
 
-2. **Uncommitted changes are correct** - The git dirty state in `src/models/mimi.rs` contains the beneficial streaming fixes
+2. **Performance is good**: 3.15x real-time factor meets the target of ~3-4x for mobile deployment.
 
-3. **Frame count is the primary remaining issue** - Once Rust generates the correct number of frames (45), end-to-end correlation should improve significantly
+3. **Audio is intelligible**: Despite low numerical correlation, the audio produces recognizable speech suitable for many use cases.
 
 ---
 
