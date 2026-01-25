@@ -246,7 +246,12 @@ fn main() {
     if let Some(latents_path) = load_latents_path {
         run_mimi_from_latents(&model_dir, &latents_path, &output_path);
     } else if validation_mode {
-        run_validation_mode(&model_dir, &validation_output_dir, json_report.as_ref().map(|v| &**v), extended_validation);
+        run_validation_mode(
+            &model_dir,
+            &validation_output_dir,
+            json_report.as_ref().map(|v| &**v),
+            extended_validation,
+        );
     } else {
         run_single_phrase(&model_dir, &output_path, &test_text, export_latents_path.as_ref().map(|v| &**v));
     }

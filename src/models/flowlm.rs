@@ -473,7 +473,10 @@ impl FlowLM {
 
             // Log EOS at every step for trajectory analysis
             if step % 10 == 0 || step == 0 || eos_val > eos_threshold - 1.0 {
-                eprintln!("[EOS-TRAJ] step={:3}, eos_logit={:7.4}, threshold={}", step, eos_val, eos_threshold);
+                eprintln!(
+                    "[EOS-TRAJ] step={:3}, eos_logit={:7.4}, threshold={}",
+                    step, eos_val, eos_threshold
+                );
             }
 
             if step >= min_gen_steps && eos_val > eos_threshold && eos_step.is_none() {
@@ -517,7 +520,13 @@ impl FlowLM {
             let eos_max = eos_logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let eos_min = eos_logits.iter().cloned().fold(f32::INFINITY, f32::min);
             let eos_mean = eos_logits.iter().sum::<f32>() / eos_logits.len() as f32;
-            eprintln!("[EOS-SUMMARY] min={:.4}, max={:.4}, mean={:.4}, count={}", eos_min, eos_max, eos_mean, eos_logits.len());
+            eprintln!(
+                "[EOS-SUMMARY] min={:.4}, max={:.4}, mean={:.4}, count={}",
+                eos_min,
+                eos_max,
+                eos_mean,
+                eos_logits.len()
+            );
         }
 
         // Concatenate all latents: [1, num_frames, 32]
