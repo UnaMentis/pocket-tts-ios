@@ -317,7 +317,7 @@ impl FlowNet {
     /// * `hidden` - Conditioning from transformer [batch, seq, 1024]
     /// * `num_steps` - Number of flow steps (more = higher quality)
     /// * `temperature` - Sampling temperature
-    pub fn generate(&self, hidden: &Tensor, num_steps: usize, _temperature: f32, device: &Device) -> Result<Tensor> {
+    pub fn generate(&self, hidden: &Tensor, num_steps: usize, temperature: f32, device: &Device) -> Result<Tensor> {
         let (batch_size, seq_len, _) = hidden.dims3()?;
 
         // Get conditioning embedding
@@ -334,15 +334,15 @@ impl FlowNet {
         eprintln!("[FlowNet] conditioning: mean={:.4}, std={:.4}", c_mean, c_std);
 
         // Start from noise (x_0 in LSD notation)
-        // DEBUG: Use zeros instead of randn for deterministic comparison with Python
-        let mut current =
-            Tensor::zeros((batch_size, seq_len, self.config.latent_dim), candle_core::DType::F32, device)?;
-        // let mut current = Tensor::randn(
-        //     0f32,
-        //     1f32,
-        //     (batch_size, seq_len, self.config.latent_dim),
-        //     device,
-        // )?;
+        // Python uses: std = temp^0.5, and samples from Normal(0, std)
+        // Python default temperature = 0.7, so std ≈ 0.8367
+        let std = temperature.sqrt();
+        let mut current = Tensor::randn(
+            0f32,
+            std,
+            (batch_size, seq_len, self.config.latent_dim),
+            device,
+        )?;
 
         // LSD decoding: integrate from s=0 toward t=1
         // For i in 0..num_steps:
