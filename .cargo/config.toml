@@ -1,0 +1,16 @@
+# Cargo configuration for pocket-tts-ios
+
+# iOS cross-compilation settings
+[target.aarch64-apple-ios]
+rustflags = []
+
+[target.aarch64-apple-ios-sim]
+rustflags = []
+
+# Environment variables for CMake-based dependencies
+# These help with sentencepiece-sys iOS cross-compilation
+[env]
+# Skip shared library build in sentencepiece (we only need static)
+SPM_ENABLE_SHARED = "OFF"
+# Disable tests in sentencepiece
+SPM_BUILD_TEST = "OFF"
