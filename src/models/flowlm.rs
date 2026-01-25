@@ -472,11 +472,24 @@ impl FlowLM {
             eos_logits.push(eos_val);
 
             // Log EOS at every step for trajectory analysis
-            if step % 10 == 0 || step == 0 || eos_val > eos_threshold - 1.0 {
+            if step % 10 == 0 || step == 0 || eos_val > eos_threshold - 1.0 || (36..=42).contains(&step) {
                 eprintln!(
                     "[EOS-TRAJ] step={:3}, eos_logit={:7.4}, threshold={}",
                     step, eos_val, eos_threshold
                 );
+                // Extra debug at critical steps around divergence point
+                if (36..=42).contains(&step) {
+                    let h_flat: Vec<f32> = last_hidden.flatten_all()?.to_vec1()?;
+                    let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
+                    let h_std = (h_flat.iter().map(|x| (x - h_mean).powi(2)).sum::<f32>() / h_flat.len() as f32).sqrt();
+                    let h_min = h_flat.iter().cloned().fold(f32::INFINITY, f32::min);
+                    let h_max = h_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                    eprintln!(
+                        "[EOS-DEBUG] step={}, hidden: mean={:.4}, std={:.4}, min={:.4}, max={:.4}",
+                        step, h_mean, h_std, h_min, h_max
+                    );
+                    eprintln!("[EOS-DEBUG] step={}, hidden first 8: {:?}", step, &h_flat[..8]);
+                }
             }
 
             if step >= min_gen_steps && eos_val > eos_threshold && eos_step.is_none() {
