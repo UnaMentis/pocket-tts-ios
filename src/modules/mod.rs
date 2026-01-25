@@ -4,20 +4,22 @@
 //! FlowNet for latent generation, and Mimi VAE decoder.
 
 pub mod attention;
-pub mod embeddings;
-pub mod mlp;
 pub mod conv;
-pub mod rotary;
-pub mod layer_norm;
+pub mod embeddings;
 pub mod flownet;
+pub mod layer_norm;
+pub mod mlp;
+pub mod rotary;
+pub mod streaming;
 
 #[cfg(test)]
 mod tests;
 
-pub use attention::{MultiHeadAttention, CausalSelfAttention};
+pub use attention::{CausalSelfAttention, MultiHeadAttention};
+pub use conv::{CausalConv1d, Conv1d, ConvTranspose1d, StreamableConv1d, StreamableConvTranspose1d};
 pub use embeddings::{TextEmbedding, VoiceEmbedding};
-pub use mlp::{MLP, GatedMLP};
-pub use conv::{Conv1d, ConvTranspose1d, CausalConv1d};
-pub use rotary::RotaryEmbedding;
-pub use layer_norm::RMSNorm;
 pub use flownet::{FlowNet, FlowNetConfig};
+pub use layer_norm::RMSNorm;
+pub use mlp::{GatedMLP, MLP};
+pub use rotary::RotaryEmbedding;
+pub use streaming::{StreamTensor, StreamingModule, TensorPadding};

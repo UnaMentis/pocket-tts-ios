@@ -115,3 +115,45 @@ After building the XCFramework:
 4. Bundle model files in app resources
 
 See `rust/pocket-tts-ios/README.md` for detailed integration instructions.
+
+## Git Policy
+
+**IMPORTANT: Claude MUST NOT run `git commit` or `git push` without explicit user permission.**
+
+- `git add` (staging files) is allowed and helpful
+- `git commit` is FORBIDDEN - user will commit manually
+- `git push` is FORBIDDEN - user will push manually
+- `git status` and `git diff` are allowed for inspection
+
+This ensures the user maintains control over what gets committed to the repository.
+
+## Audit Reports
+
+Periodic audit reports are stored in `docs/audit/`. Review these for cleanup tasks and recommendations.
+
+## Multi-Agent Collaboration
+
+This project uses a multi-agent collaboration pattern for development. See [docs/prompts/AGENT_ORCHESTRATION.md](docs/prompts/AGENT_ORCHESTRATION.md) for full details.
+
+### Agent Quick Reference
+
+| When | Run This Agent |
+|------|----------------|
+| After code changes to `src/models/` or `src/modules/` | **Verification Agent** - checks numerical accuracy |
+| When stuck for >1 hour | **Research Advisor** - external research and fresh hypotheses |
+| Before committing changes | **Cleanup Auditor** - finds debug code and technical debt |
+| Weekly or for planning | **Progress Tracker** - dashboard with metrics and timeline |
+
+### Running an Agent
+
+1. Start a **fresh** Claude Code session
+2. Paste the prompt from `docs/prompts/[agent-name].md`
+3. Let it complete and save its report to `docs/audit/`
+4. Review the report in your main session
+
+### Available Prompts
+
+- `docs/prompts/verification-agent.md` - Numerical accuracy testing
+- `docs/prompts/research-advisor.md` - External research for blockers
+- `docs/prompts/cleanup-audit.md` - Technical debt inventory
+- `docs/prompts/progress-tracker.md` - Progress dashboard

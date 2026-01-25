@@ -14,18 +14,20 @@
 
 use std::env;
 use std::fs::{self, File};
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{Read as IoRead, Write};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use candle_core::Device;
+use candle_core::{DType, Device, Tensor};
+use candle_nn::VarBuilder;
 use hound::{WavSpec, WavWriter};
 
 // Import from the library (requires rlib crate-type)
+use pocket_tts_ios::models::mimi::{MimiConfig, MimiDecoder};
 use pocket_tts_ios::models::pocket_tts::PocketTTSModel;
 
 /// Write latents to .npy format for Python compatibility
-fn write_npy(path: &PathBuf, data: &[f32], shape: &[usize; 3]) -> Result<(), Box<dyn std::error::Error>> {
+fn write_npy(path: &Path, data: &[f32], shape: &[usize; 3]) -> Result<(), Box<dyn std::error::Error>> {
     let mut file = File::create(path)?;
 
     // NPY format header
@@ -55,11 +57,11 @@ fn write_npy(path: &PathBuf, data: &[f32], shape: &[usize; 3]) -> Result<(), Box
 
     // Write padding (spaces)
     for _ in 0..padding_needed {
-        file.write_all(&[b' '])?;
+        file.write_all(b" ")?;
     }
 
     // Newline before data
-    file.write_all(&[b'\n'])?;
+    file.write_all(b"\n")?;
 
     // Write data as little-endian f32
     for &val in data {
@@ -162,6 +164,7 @@ fn main() {
     let mut validation_output_dir = PathBuf::from("./validation/rust_outputs");
     let mut json_report: Option<PathBuf> = None;
     let mut export_latents_path: Option<PathBuf> = None;
+    let mut load_latents_path: Option<PathBuf> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -171,63 +174,71 @@ fn main() {
                     model_dir = PathBuf::from(&args[i + 1]);
                     i += 1;
                 }
-            }
+            },
             "--output" | "-o" => {
                 if i + 1 < args.len() {
                     output_path = PathBuf::from(&args[i + 1]);
                     i += 1;
                 }
-            }
+            },
             "--text" | "-t" => {
                 if i + 1 < args.len() {
                     test_text = args[i + 1].clone();
                     i += 1;
                 }
-            }
+            },
             "--validation-mode" | "-v" => {
                 validation_mode = true;
-            }
+            },
             "--validation-output" => {
                 if i + 1 < args.len() {
                     validation_output_dir = PathBuf::from(&args[i + 1]);
                     i += 1;
                 }
-            }
+            },
             "--json-report" => {
                 if i + 1 < args.len() {
                     json_report = Some(PathBuf::from(&args[i + 1]));
                     i += 1;
                 }
-            }
+            },
             "--export-latents" => {
                 if i + 1 < args.len() {
                     export_latents_path = Some(PathBuf::from(&args[i + 1]));
                     i += 1;
                 }
-            }
+            },
+            "--load-latents" => {
+                if i + 1 < args.len() {
+                    load_latents_path = Some(PathBuf::from(&args[i + 1]));
+                    i += 1;
+                }
+            },
             "--help" | "-h" => {
                 print_usage();
                 return;
-            }
+            },
             _ => {
                 eprintln!("Unknown argument: {}", args[i]);
                 print_usage();
                 return;
-            }
+            },
         }
         i += 1;
     }
 
-    // Run in validation mode or single-phrase mode
-    if validation_mode {
-        run_validation_mode(&model_dir, &validation_output_dir, json_report.as_ref());
+    // Run in validation mode, latent-load mode, or single-phrase mode
+    if let Some(latents_path) = load_latents_path {
+        run_mimi_from_latents(&model_dir, &latents_path, &output_path);
+    } else if validation_mode {
+        run_validation_mode(&model_dir, &validation_output_dir, json_report.as_ref().map(|v| &**v));
     } else {
-        run_single_phrase(&model_dir, &output_path, &test_text, export_latents_path.as_ref());
+        run_single_phrase(&model_dir, &output_path, &test_text, export_latents_path.as_ref().map(|v| &**v));
     }
 }
 
 /// Run validation mode: synthesize all test phrases and create manifest
-fn run_validation_mode(model_dir: &PathBuf, output_dir: &PathBuf, json_report: Option<&PathBuf>) {
+fn run_validation_mode(model_dir: &Path, output_dir: &Path, json_report: Option<&Path>) {
     println!("=== VALIDATION MODE ===\n");
     println!("Model directory: {}", model_dir.display());
     println!("Output directory: {}", output_dir.display());
@@ -261,7 +272,7 @@ fn run_validation_mode(model_dir: &PathBuf, output_dir: &PathBuf, json_report: O
                 eprintln!("ERROR: Synthesis failed for {}: {:?}", phrase_id, e);
                 all_healthy = false;
                 continue;
-            }
+            },
         };
         let synthesis_time = start.elapsed().as_secs_f32();
         println!("Synthesized in {:.2}s", synthesis_time);
@@ -273,7 +284,10 @@ fn run_validation_mode(model_dir: &PathBuf, output_dir: &PathBuf, json_report: O
         println!("  Max amplitude: {:.4}", stats.max_amplitude);
         println!("  RMS: {:.4}", stats.rms);
         println!("  DC offset: {:.6}", stats.dc_offset);
-        println!("  NaN: {}, Inf: {}, Clipped: {}", stats.nan_count, stats.inf_count, stats.clip_count);
+        println!(
+            "  NaN: {}, Inf: {}, Clipped: {}",
+            stats.nan_count, stats.inf_count, stats.clip_count
+        );
 
         if !stats.is_healthy() {
             println!("  ⚠️  UNHEALTHY signal detected!");
@@ -353,7 +367,7 @@ fn run_validation_mode(model_dir: &PathBuf, output_dir: &PathBuf, json_report: O
 }
 
 /// Run single phrase mode (original behavior)
-fn run_single_phrase(model_dir: &PathBuf, output_path: &PathBuf, test_text: &str, export_latents_path: Option<&PathBuf>) {
+fn run_single_phrase(model_dir: &Path, output_path: &Path, test_text: &str, export_latents_path: Option<&Path>) {
     println!("Configuration:");
     println!("  Model directory: {}", model_dir.display());
     println!("  Output file: {}", output_path.display());
@@ -376,7 +390,7 @@ fn run_single_phrase(model_dir: &PathBuf, output_path: &PathBuf, test_text: &str
             Err(e) => {
                 eprintln!("ERROR: Synthesis failed: {:?}", e);
                 std::process::exit(1);
-            }
+            },
         }
     } else {
         // Use regular synthesize
@@ -385,7 +399,7 @@ fn run_single_phrase(model_dir: &PathBuf, output_path: &PathBuf, test_text: &str
             Err(e) => {
                 eprintln!("ERROR: Synthesis failed: {:?}", e);
                 std::process::exit(1);
-            }
+            },
         }
     };
     let synthesis_time = start.elapsed().as_secs_f32();
@@ -404,8 +418,10 @@ fn run_single_phrase(model_dir: &PathBuf, output_path: &PathBuf, test_text: &str
     println!("Synthesis complete in {:.2}s", synthesis_time);
     println!("  Audio samples: {}", audio.len());
     println!("  Duration: {:.2}s", audio.len() as f32 / sample_rate as f32);
-    println!("  Real-time factor: {:.2}x\n",
-        (audio.len() as f32 / sample_rate as f32) / synthesis_time);
+    println!(
+        "  Real-time factor: {:.2}x\n",
+        (audio.len() as f32 / sample_rate as f32) / synthesis_time
+    );
 
     // Compute and display stats
     let stats = AudioStats::compute(&audio, sample_rate);
@@ -429,7 +445,7 @@ fn run_single_phrase(model_dir: &PathBuf, output_path: &PathBuf, test_text: &str
     // Sample first/last values
     println!("\n  First 10 samples: {:?}", &audio[..10.min(audio.len())]);
     if audio.len() > 10 {
-        println!("  Last 10 samples: {:?}", &audio[audio.len()-10..]);
+        println!("  Last 10 samples: {:?}", &audio[audio.len() - 10..]);
     }
 
     // Write WAV file
@@ -462,7 +478,7 @@ fn run_single_phrase(model_dir: &PathBuf, output_path: &PathBuf, test_text: &str
 }
 
 /// Load and verify model
-fn load_model(model_dir: &PathBuf) -> PocketTTSModel {
+fn load_model(model_dir: &Path) -> PocketTTSModel {
     // Verify model directory exists
     if !model_dir.exists() {
         eprintln!("ERROR: Model directory does not exist: {}", model_dir.display());
@@ -505,7 +521,7 @@ fn load_model(model_dir: &PathBuf) -> PocketTTSModel {
         Err(e) => {
             eprintln!("ERROR: Failed to load model: {:?}", e);
             std::process::exit(1);
-        }
+        },
     };
     println!("Model loaded in {:.2}s", start.elapsed().as_secs_f32());
     println!("  Version: {}", model.version());
@@ -516,7 +532,7 @@ fn load_model(model_dir: &PathBuf) -> PocketTTSModel {
 }
 
 /// Write audio to WAV file
-fn write_wav(path: &PathBuf, audio: &[f32], sample_rate: u32) -> Result<(), Box<dyn std::error::Error>> {
+fn write_wav(path: &Path, audio: &[f32], sample_rate: u32) -> Result<(), Box<dyn std::error::Error>> {
     let spec = WavSpec {
         channels: 1,
         sample_rate,
@@ -535,6 +551,91 @@ fn write_wav(path: &PathBuf, audio: &[f32], sample_rate: u32) -> Result<(), Box<
     Ok(())
 }
 
+/// Run Mimi decoder from pre-saved latents (for debugging/comparison)
+///
+/// This mode loads denormalized latents from a raw f32 binary file and
+/// runs them through the Mimi decoder to compare intermediate values
+/// with the Python reference implementation.
+fn run_mimi_from_latents(model_dir: &Path, latents_path: &Path, output_path: &Path) {
+    println!("=== MIMI LATENT TEST MODE ===\n");
+    println!("Model directory: {}", model_dir.display());
+    println!("Latents file: {}", latents_path.display());
+    println!("Output file: {}", output_path.display());
+
+    // Load raw f32 latents
+    let mut latents_data = Vec::new();
+    let mut file = File::open(latents_path).expect("Failed to open latents file");
+    file.read_to_end(&mut latents_data).expect("Failed to read latents");
+
+    // Convert bytes to f32 (little-endian)
+    let latents_f32: Vec<f32> = latents_data
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+
+    // Determine shape from file size
+    // Python saves [44, 32] for standard test phrase
+    let latent_dim = 32;
+    let seq_len = latents_f32.len() / latent_dim;
+    println!("\nLoaded {} latent values: [{}, {}]", latents_f32.len(), seq_len, latent_dim);
+
+    // Print first 8 values to verify match with Python
+    println!("First 8 latent values (frame 0): {:?}", &latents_f32[..8]);
+
+    let device = Device::Cpu;
+
+    // Create tensor [batch=1, seq, latent_dim]
+    let latents =
+        Tensor::from_vec(latents_f32.clone(), (1, seq_len, latent_dim), &device).expect("Failed to create tensor");
+    println!("Latent tensor shape: {:?}", latents.dims());
+
+    // Load model weights
+    let model_path = model_dir.join("model.safetensors");
+    println!("\nLoading model weights...");
+    let vb = unsafe {
+        VarBuilder::from_mmaped_safetensors(&[&model_path], DType::F32, &device).expect("Failed to load weights")
+    };
+
+    // Create Mimi decoder
+    let mimi_config = MimiConfig::default();
+    let mimi = MimiDecoder::new(mimi_config, vb.pp("mimi")).expect("Failed to create Mimi decoder");
+
+    // Run forward pass
+    println!("\nRunning Mimi decoder...");
+    let audio = mimi.forward_streaming(&latents).expect("Failed to run Mimi");
+
+    println!("\nAudio output shape: {:?}", audio.dims());
+
+    // Get audio samples
+    let audio_vec: Vec<f32> = audio.squeeze(0).expect("squeeze").to_vec1().expect("to_vec1");
+    println!("Audio samples: {}", audio_vec.len());
+
+    // Audio statistics
+    let max_amp = audio_vec.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    let mean_amp = audio_vec.iter().map(|s| s.abs()).sum::<f32>() / audio_vec.len() as f32;
+    println!("Max amplitude: {:.4}", max_amp);
+    println!("Mean amplitude: {:.4}", mean_amp);
+
+    // Write WAV file
+    println!("\nWriting WAV file...");
+    if let Err(e) = write_wav(output_path, &audio_vec, 24000) {
+        eprintln!("ERROR: Failed to write WAV: {:?}", e);
+    } else {
+        println!("Saved: {}", output_path.display());
+    }
+
+    // Compare with Python reference if available
+    let python_audio_path = latents_path.parent().unwrap().join("python_mimi_output.npy");
+    if python_audio_path.exists() {
+        println!("\n=== Comparison with Python ===");
+        println!("Python output: {}", python_audio_path.display());
+        println!(
+            "Run validation/compare_mimi_outputs.py --rust-audio {} to compare",
+            output_path.display()
+        );
+    }
+}
+
 fn print_usage() {
     println!("Kyutai Pocket TTS Test Harness");
     println!("\nUsage:");
@@ -551,6 +652,7 @@ fn print_usage() {
     println!("  -v, --validation-mode      Run all test phrases and create manifest");
     println!("  --validation-output PATH   Output dir for validation (default: ./validation/rust_outputs)");
     println!("  --export-latents PATH      Export latents to .npy file (for debugging)");
+    println!("  --load-latents PATH        Load pre-saved latents (.f32) and run through Mimi");
     println!("  --json-report PATH         Write JSON report to file");
     println!("  -h, --help                 Show this help message");
     println!("\nThe model directory should contain:");
