@@ -630,8 +630,9 @@ impl DecoderTransformer {
 
         // Create RoPE with same parameters as Python's MimiStreamingMultiheadAttention
         // Python uses max_period=10000.0 (default)
+        // Max seq_len of 8192 allows up to ~40 seconds of audio (512 latents × 16 upsample)
         let rope = crate::modules::rotary::RotaryEmbedding::new(
-            head_dim, 4096,    // max_seq_len (should be enough for any audio)
+            head_dim, 8192,    // max_seq_len (512 latents × 16 upsample = 8192)
             10000.0, // base (max_period in Python)
             device,
         )?;

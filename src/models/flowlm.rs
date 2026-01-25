@@ -420,13 +420,17 @@ impl FlowLM {
 
         // Use same defaults as Python reference:
         // - EOS threshold: -4.0 (logit must exceed this to trigger EOS)
-        // - frames_after_eos: 5 to match Python's 45 frames (EOS at 40 + 5 = 45)
+        // - frames_after_eos: calculated from num_text_tokens (Python formula)
         let eos_threshold = -4.0; // Match Python DEFAULT_EOS_THRESHOLD
-        let frames_after_eos = 5; // Generate more frames after EOS to match Python (45 total)
-        let min_gen_steps = 40; // Force minimum frames to match Python
+        let num_text_tokens = token_ids.dim(1)?;
+        // Python: frames_after_eos = min(5, ceil(num_text_tokens / 4))
+        let frames_after_eos = std::cmp::min(5, (num_text_tokens + 3) / 4);
+        // Remove debug min_gen_steps - allow natural EOS detection
+        let min_gen_steps = 0; // Natural EOS detection
 
         let mut all_latents: Vec<Tensor> = Vec::new();
         let mut eos_step: Option<usize> = None;
+        let mut eos_logits: Vec<f32> = Vec::new(); // Track EOS trajectory for debugging
 
         // Start with BOS embedding
         let mut current_latent = self.bos_emb.clone().unsqueeze(0)?.unsqueeze(0)?; // [1, 1, 32]
@@ -462,9 +466,15 @@ impl FlowLM {
                 // Python first 8: [-0.10488168, -0.26733553, 0.00387744, -0.23025721, 0.29963714, 0.6678712, 0.5796935, 0.6726278]
             }
 
-            // Check EOS prediction (but only after min_gen_steps for debugging)
+            // Check EOS prediction
             let eos_logit = self.out_eos.forward(&last_hidden)?; // [1, 1]
             let eos_val: f32 = eos_logit.squeeze(1)?.to_vec1::<f32>()?[0];
+            eos_logits.push(eos_val);
+
+            // Log EOS at every step for trajectory analysis
+            if step % 10 == 0 || step == 0 || eos_val > eos_threshold - 1.0 {
+                eprintln!("[EOS-TRAJ] step={:3}, eos_logit={:7.4}, threshold={}", step, eos_val, eos_threshold);
+            }
 
             if step >= min_gen_steps && eos_val > eos_threshold && eos_step.is_none() {
                 eprintln!("[FlowLM] EOS detected at step {}, logit={:.4}", step, eos_val);
@@ -501,6 +511,14 @@ impl FlowLM {
         }
 
         eprintln!("[FlowLM] generated {} latent frames", all_latents.len());
+
+        // Log EOS trajectory summary for debugging
+        if !eos_logits.is_empty() {
+            let eos_max = eos_logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let eos_min = eos_logits.iter().cloned().fold(f32::INFINITY, f32::min);
+            let eos_mean = eos_logits.iter().sum::<f32>() / eos_logits.len() as f32;
+            eprintln!("[EOS-SUMMARY] min={:.4}, max={:.4}, mean={:.4}, count={}", eos_min, eos_max, eos_mean, eos_logits.len());
+        }
 
         // Concatenate all latents: [1, num_frames, 32]
         if all_latents.is_empty() {
