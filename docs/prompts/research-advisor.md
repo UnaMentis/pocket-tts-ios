@@ -23,6 +23,7 @@ You are a **Research Advisor** supporting a Rust/Candle port of Kyutai Pocket TT
 **1.2 Review project documentation:**
 - Read `CLAUDE.md` for architecture overview
 - Check `README.md` and `ATTRIBUTION.md` for source references
+- **Read `docs/python-reference/README.md`** - This contains comprehensive documentation extracted from the Python source code, including the critical streaming convolution algorithms, SEANet architecture, and state management patterns. Start here for implementation details.
 - Scan any other docs that seem relevant
 
 **1.3 Examine work in progress:**
@@ -58,6 +59,8 @@ The project references `babybirdprd/pocket-tts` as a working Rust port:
 - Look for: Community discussions, notebooks, or examples
 
 ### Phase 3: Technical Deep-Dives
+
+**First, check `docs/python-reference/`** - Most implementation details are already documented there, extracted directly from the Python source. Only do external research if the answer isn't in the local docs.
 
 Based on the current blocker, research relevant technical areas:
 

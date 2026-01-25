@@ -8,68 +8,68 @@
       "text": "Hello, this is a test of the Pocket TTS system.",
       "wav_file": "phrase_00_rust.wav",
       "audio_stats": {
-        "samples": 5768,
-        "duration_sec": 0.2403,
-        "max_amplitude": 0.13071331,
-        "mean_amplitude": 0.026131216,
-        "rms": 0.034606025,
-        "dc_offset": -0.010660133,
+        "samples": 82568,
+        "duration_sec": 3.4403,
+        "max_amplitude": 0.4373419,
+        "mean_amplitude": 0.033046115,
+        "rms": 0.05556733,
+        "dc_offset": -0.000018483976,
         "nan_count": 0,
         "inf_count": 0,
         "clip_count": 0
       },
-      "synthesis_time_sec": 0.0873
+      "synthesis_time_sec": 0.8720
     },
     {
       "id": "phrase_01",
       "text": "The quick brown fox jumps over the lazy dog.",
       "wav_file": "phrase_01_rust.wav",
       "audio_stats": {
-        "samples": 5768,
-        "duration_sec": 0.2403,
-        "max_amplitude": 0.1969329,
-        "mean_amplitude": 0.039388575,
-        "rms": 0.05239091,
-        "dc_offset": -0.023184363,
+        "samples": 82568,
+        "duration_sec": 3.4403,
+        "max_amplitude": 0.49007785,
+        "mean_amplitude": 0.036742922,
+        "rms": 0.0651591,
+        "dc_offset": 0.00007920203,
         "nan_count": 0,
         "inf_count": 0,
         "clip_count": 0
       },
-      "synthesis_time_sec": 0.0842
+      "synthesis_time_sec": 0.8200
     },
     {
       "id": "phrase_02",
       "text": "One two three four five six seven eight nine ten.",
       "wav_file": "phrase_02_rust.wav",
       "audio_stats": {
-        "samples": 5768,
-        "duration_sec": 0.2403,
-        "max_amplitude": 0.15336898,
-        "mean_amplitude": 0.03131353,
-        "rms": 0.04013953,
-        "dc_offset": -0.02169357,
+        "samples": 82568,
+        "duration_sec": 3.4403,
+        "max_amplitude": 0.39557958,
+        "mean_amplitude": 0.042563617,
+        "rms": 0.06710721,
+        "dc_offset": 0.00009629662,
         "nan_count": 0,
         "inf_count": 0,
         "clip_count": 0
       },
-      "synthesis_time_sec": 0.0841
+      "synthesis_time_sec": 0.8296
     },
     {
       "id": "phrase_03",
       "text": "How are you doing today?",
       "wav_file": "phrase_03_rust.wav",
       "audio_stats": {
-        "samples": 5768,
-        "duration_sec": 0.2403,
-        "max_amplitude": 0.2790011,
-        "mean_amplitude": 0.03738712,
-        "rms": 0.062450036,
-        "dc_offset": -0.016118612,
+        "samples": 115208,
+        "duration_sec": 4.8003,
+        "max_amplitude": 0.39286262,
+        "mean_amplitude": 0.03531614,
+        "rms": 0.06313308,
+        "dc_offset": 0.000011093844,
         "nan_count": 0,
         "inf_count": 0,
         "clip_count": 0
       },
-      "synthesis_time_sec": 0.0765
+      "synthesis_time_sec": 1.1226
     }
   ],
   "all_healthy": true

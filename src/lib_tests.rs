@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::{version, available_voices, AudioChunk, SynthesisResult};
+    use crate::{available_voices, version, AudioChunk, SynthesisResult};
 
     #[test]
     fn test_version_format() {
@@ -39,7 +39,9 @@ mod tests {
     #[test]
     fn test_available_voices_names() {
         let voices = available_voices();
-        let expected_names = ["Alba", "Marius", "Javert", "Jean", "Fantine", "Cosette", "Eponine", "Azelma"];
+        let expected_names = [
+            "Alba", "Marius", "Javert", "Jean", "Fantine", "Cosette", "Eponine", "Azelma",
+        ];
 
         for (voice, expected) in voices.iter().zip(expected_names.iter()) {
             assert_eq!(voice.name, *expected);

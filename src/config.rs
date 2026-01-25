@@ -41,7 +41,7 @@ pub struct TTSConfig {
 impl Default for TTSConfig {
     fn default() -> Self {
         Self {
-            voice_index: 0,          // Alba
+            voice_index: 0, // Alba
             temperature: 0.7,
             top_p: 0.9,
             speed: 1.0,

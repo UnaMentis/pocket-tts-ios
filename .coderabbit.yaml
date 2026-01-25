@@ -1,0 +1,76 @@
+# CodeRabbit AI Review Configuration
+# https://docs.coderabbit.ai/configuration
+
+language: "en"
+
+reviews:
+  auto_review:
+    enabled: true
+    drafts: true
+
+  profile: "assertive"
+
+  request_changes_workflow: true
+
+  high_level_summary: true
+
+  poem: false
+
+  path_instructions:
+    - path: "src/models/**/*.rs"
+      instructions: |
+        Focus on:
+        - Numerical precision (f32 vs f64 operations)
+        - Tensor shape consistency and broadcasting
+        - Memory efficiency in forward passes
+        - Comparison with PyTorch reference behavior
+        - Weight loading correctness from safetensors
+        - Proper use of Candle APIs
+
+    - path: "src/modules/**/*.rs"
+      instructions: |
+        Focus on:
+        - Candle API usage patterns and idioms
+        - Layer implementations matching PyTorch semantics exactly
+        - Broadcasting behavior correctness
+        - Edge cases in normalization layers (epsilon values, axis handling)
+        - RoPE implementation correctness
+        - Attention mask handling
+
+    - path: "src/*.rs"
+      instructions: |
+        Focus on:
+        - Public API design and ergonomics
+        - Error handling (prefer Result over unwrap/expect)
+        - Documentation for public items
+        - Thread safety considerations for iOS
+        - Memory management for FFI
+
+    - path: "**/*.rs"
+      instructions: |
+        General Rust review:
+        - Idiomatic Rust patterns
+        - Error handling best practices
+        - Performance considerations
+        - Avoid unwrap/expect in production paths
+        - Proper lifetime annotations
+
+    - path: ".github/workflows/**/*.yml"
+      instructions: |
+        Focus on:
+        - Action versions (prefer pinned SHA or version tags over @latest)
+        - Secrets handling (never echo secrets)
+        - Caching efficiency
+        - Workflow dependencies and parallelism
+        - Timeout settings for long jobs
+
+    - path: "validation/**/*.py"
+      instructions: |
+        Focus on:
+        - Numerical comparison accuracy
+        - Proper tolerance thresholds for ML outputs
+        - Clear error reporting
+        - Reproducibility of tests
+
+chat:
+  auto_reply: true

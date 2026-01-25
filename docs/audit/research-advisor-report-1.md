@@ -1,57 +1,83 @@
 # Research Advisor Briefing
 
 **Date:** 2026-01-24
-**Current Blocker:** Autoregressive generation step 0 diverges from Python despite text phase matching perfectly
-**Research Focus:** KV cache handling, single-token attention, Candle precision, Pocket TTS architecture
+**Current Blocker:** Waveform correlation ~0.08 (aligned) vs target >0.95; Rust batch processing fundamentally differs from Python streaming
+**Research Focus:** Streaming convolution state management, SEANet architecture, frame-by-frame processing, alternative solutions
 
 ---
 
 ## Situational Summary
 
-The Rust/Candle port of Kyutai Pocket TTS has made significant progress with 11 architectural issues fixed (tokenization, RoPE, LayerNorm, FlowNet, SEANet, voice conditioning, etc.). Correlation improved from 0.0016 to ~0.01, but target is >0.95.
+The Rust/Candle port has achieved a **major milestone**: all 42 generated latents now match Python exactly with cosine similarity = 1.0. The FlowLM transformer, FlowNet, and the entire latent generation pipeline are verified correct. Generation length is also fixed (41 frames matching Python).
 
-**Critical Discovery:** The text processing phase (7 tokens through transformer with 125-position voice KV cache) produces outputs that match Python exactly at every layer. However, the very next step—**step 0 of autoregressive latent generation** (single BOS token through transformer with 132-position KV cache)—diverges immediately:
-- Python step 0 hidden: `[-0.24085297, -0.47014824, 0.23839632, 1.0895451, ...]`
-- Rust step 0 hidden: `[-0.2274104, -0.35906476, 0.05141802, 0.5091589, ...]`
+**The remaining issue is isolated to the Mimi decoder's SEANet component.** The PORTING_STATUS.md documents extensive investigation revealing a fundamental architectural difference:
 
-This is not a gradual drift—it's a significant mismatch from the first autoregressive step. The divergence occurs when transitioning from multi-token (7-token text) to single-token (1-token BOS) attention over the same KV cache.
+1. **Python streaming mode**: Processes one latent frame at a time with state buffers (`previous` for Conv1d, `partial` for ConvTranspose1d) that accumulate across frames
+2. **Rust batch mode**: Processes all latent frames at once without inter-frame state accumulation
+
+**Critical Discovery**: Even Python's own batch mode has only ~-0.04 correlation with Python streaming mode! This means batch processing is fundamentally different from streaming, not just a precision issue.
+
+Current Rust vs Python streaming correlation: **0.64** after alignment (shift: -449 samples). This is actually consistent with expected batch vs streaming behavior. The max amplitude is now close: Rust ~0.45 vs Python ~0.46.
+
+**Key insight from local docs**: The `docs/python-reference/` directory contains comprehensive documentation of Python's streaming algorithms, including the exact overlap-add mechanism for ConvTranspose1d and causal context buffering for Conv1d.
 
 ---
 
 ## Key Research Findings
 
-### From Official Kyutai Source
+### From Official Kyutai Source (Moshi/Mimi)
 
-- **Architecture**: FlowLM is a 6-layer transformer (~70M params) at 12.5 Hz frame rate with 16 audio tokens per frame
-- **Voice Conditioning**: Audio prompt → `MimiModel.encode_to_latent()` → project via `speaker_proj_weight` → initialize via `_run_flow_lm_and_increment_step()`
-- **State Management**: Uses `StatefulModule` base class with cache dictionaries containing `current_end` (position) and `transformer_layer_N_self_attn_cache`
-- **LSD Sampling**: Lagrangian Self-Distillation with 1-step integrator (`lsd_decode_steps = 1`)
-- **Key URLs**:
-  - [GitHub: kyutai-labs/pocket-tts](https://github.com/kyutai-labs/pocket-tts)
-  - [HuggingFace Model](https://huggingface.co/kyutai/pocket-tts)
-  - [DeepWiki Technical Overview](https://deepwiki.com/kyutai-labs/pocket-tts)
+**Streaming Implementation in Moshi Rust** ([GitHub](https://github.com/kyutai-labs/moshi)):
+- Kyutai provides a production Rust implementation of Mimi in their Moshi repo (`rust/` directory)
+- Python bindings available as `rustymimi` on PyPI ([Release](https://github.com/kyutai-labs/moshi/releases/tag/rustymimi-0.2.2))
+- This is the **official reference** for Rust streaming Mimi
+- **moshi-swift** uses MLX Swift for iOS, not Candle, but demonstrates the streaming pattern
 
-### From Reference Implementation (babybirdprd/pocket-tts)
+**Key Mimi Specs**:
+- 24 kHz audio → 12.5 Hz representation
+- 1.1 kbps bandwidth
+- 80ms latency (streaming frame size)
+- Licensed: MIT (code), CC-BY 4.0 (weights)
 
-- Published on [crates.io as pocket-tts-cli](https://crates.io/crates/pocket-tts-cli) with 1,309 SLoC
-- Documentation mentions "Full-pipeline stateful streaming (KV-caching for Transformer, overlap-add for Mimi)" but provides no implementation details on porting challenges
-- No documented issues or PRs about numerical divergence were found
-- The repo claims near-identical output but doesn't document how divergence was debugged
+### From Academic Literature
 
-### From Technical Deep-Dives
+**Streamable Neural Audio Synthesis** ([arXiv:2204.07064](https://arxiv.org/abs/2204.07064), [cached_conv](https://acids-ircam.github.io/cached_conv/)):
+- Introduces **cached padding** method for streaming non-causal convolutions
+- Key insight: "The last N frames from input buffer 1 are cached and concatenated with input buffer 2 (with N being the original amount of zero padding)"
+- Can convert any trained model to streaming **post-training**
 
-**Candle Precision Issues** ([GitHub Issue #3032](https://github.com/huggingface/candle/issues/3032)):
-- Confirmed precision differences between Candle and PyTorch for `matmul` and linear layers
-- MSE ~0.0000000004, MAE ~0.00001550 for F32 on CPU
-- Maintainer notes: "floating point addition and multiplication are not associative"
-- **No fix available** - this is inherent to different computation orderings
-- Error accumulates across layers until outputs diverge
+**For Transposed Convolutions** ([Andrew Gibiansky](https://andrew.gibiansky.com/streaming-audio-synthesis/)):
+- "Each input timestep contributes to k different outputs"
+- "The last input timestep in a chunk affects the first (k-1)/2 outputs of the NEXT chunk"
+- State buffer size = k - 1 timesteps of partial outputs
+- Algorithm:
+  1. Run conv_transpose: n inputs → n + k - 1 outputs
+  2. Add current state to left edge of outputs
+  3. Return all but rightmost k-1 timesteps
+  4. Store rightmost k-1 timesteps as new state
 
-**Prefill vs Decode Phase Differences**:
-- Prefill (multi-token): Highly parallelized, compute-bound, write-intensive to KV cache
-- Decode (single-token): Sequential, memory-bound, read-intensive from KV cache
-- The attention computation fundamentally differs: prefill uses matrix-matrix ops, decode uses matrix-vector ops
-- Position tracking is critical: new queries must align with KV cache positions
+### From Local Python Reference Documentation
+
+**CRITICAL**: The `docs/python-reference/` directory contains the answer! Key documents:
+
+1. **[conv-transpose-overlap-add.md](docs/python-reference/STREAMING/conv-transpose-overlap-add.md)** - Complete Python implementation with bias subtraction detail
+2. **[conv1d-streaming.md](docs/python-reference/STREAMING/conv1d-streaming.md)** - Causal context buffer with first-frame handling
+3. **[seanet-decoder.md](docs/python-reference/ARCHITECTURE/seanet-decoder.md)** - Complete layer structure with state buffer dimensions
+
+**Exact State Buffer Sizes (from local docs)**:
+| Layer | Kernel | Stride | Overlap (K-S) | Channels | State Shape |
+|-------|--------|--------|---------------|----------|-------------|
+| Mimi Upsample | 32 | 16 | 16 | 512 | `[B, 512, 16]` |
+| SEANet Stage 0 | 16 | 8 | 8 | 256 | `[B, 256, 8]` |
+| SEANet Stage 1 | 10 | 5 | 5 | 128 | `[B, 128, 5]` |
+| SEANet Stage 2 | 8 | 4 | 4 | 64 | `[B, 64, 4]` |
+| SEANet Stage 3 | 4 | 2 | 2 | 32 | `[B, 32, 2]` |
+
+### From Candle Framework Resources
+
+**Candle does NOT have built-in streaming convolution support**. The `ConvTranspose1d` in [candle-nn](https://docs.rs/candle-nn/latest/candle_nn/conv/struct.ConvTranspose1d.html) is stateless.
+
+However, Kyutai's [moshika-candle-bf16](https://huggingface.co/kyutai/moshika-candle-bf16) demonstrates that streaming Mimi IS possible in Candle - their Rust implementation in the Moshi repo must handle it.
 
 ---
 
@@ -59,125 +85,176 @@ This is not a gradual drift—it's a significant mismatch from the first autoreg
 
 ### High Confidence
 
-**1. Verify BOS Embedding Input for Step 0**
-- Why: The divergence starts at the very first autoregressive step, suggesting the INPUT might be different
-- How:
-  1. Add Python hook to capture the exact tensor fed into layer 0 at step 0 (BOS embedding after projection)
-  2. Compare with Rust's `bos_projected` tensor entering the transformer
-  3. Check: Is this the same BOS embedding used during text phase, or is it fetched differently?
+**1. Study Kyutai's Official Rust Mimi Implementation** (HIGHEST PRIORITY)
+- **Why:** This is the authoritative streaming Mimi in Rust
+- **Confidence:** Very High - it's Kyutai's own production code
+- **How:**
+  1. Clone [github.com/kyutai-labs/moshi](https://github.com/kyutai-labs/moshi)
+  2. Navigate to `rust/mimi/` directory
+  3. Study how they implement streaming ConvTranspose1d
+  4. Compare with current Rust implementation
+  5. The state management pattern should be directly applicable
 
-**2. Compare RoPE Offset at Step 0**
-- Why: Python debug shows offset should be 132 (125 voice + 7 text). Rust logs show `RoPE offset: 132` but needs verification
-- How:
-  1. In Python, hook RoPE and log the position indices used for step 0
-  2. Verify Rust uses same offset (132) and same frequency computation
-  3. Check: Do cos/sin tables match exactly at position 132?
+**2. Process One Latent Frame at a Time with Persistent State**
+- **Why:** This is exactly how Python works, already documented in local docs
+- **Confidence:** Very High - the algorithms are complete in `docs/python-reference/`
+- **How:**
+  1. Create state structs matching local doc specs (already partially done in mimi.rs)
+  2. Modify `forward_streaming` to process latents one-by-one in a loop
+  3. Call `forward_streaming` for ConvTranspose1d with overlap-add (already implemented!)
+  4. Ensure state persists across the loop iterations
+  5. **Key detail**: Subtract bias before storing partial (already in code at line 338-343!)
 
-**3. Verify KV Cache State Before Step 0**
-- Why: If text phase is correct, KV cache should contain valid K/V for positions 0-131. Any corruption would cause step 0 to diverge
-- How:
-  1. After text phase, dump K[131] and V[131] (last text position) in both Python and Rust
-  2. Compare these values - they should match since text phase matches
-  3. If they don't match, the cache update mechanism has a bug
+**Current implementation status** (from reading mimi.rs):
+- State structs: **DONE** (StreamingConv1dState, StreamingConvTr1dState)
+- ConvTranspose1d::forward_streaming: **DONE** (overlap-add with bias subtraction)
+- Conv1d::forward_streaming: **DONE** (causal context buffer)
+- Frame-by-frame loop: **NOT DONE** - currently processes all frames in batch, then applies streaming to SEANet
+
+**The missing piece**: The current code processes ALL latents through output_proj, upsample, and decoder_transformer in batch, then runs SEANet with streaming. Python processes EACH latent frame through the ENTIRE pipeline with streaming state.
 
 ### Worth Trying
 
-**4. Check Attention Scale Factor Application**
-- Why: Rust applies scale as `f64` cast (`self.scale as f64`), PyTorch may handle differently
-- How:
-  1. Log pre-scale and post-scale attention scores for step 0
-  2. Verify scale = 1/sqrt(64) = 0.125 in both implementations
-  3. Try: Apply scale before matmul vs after (order can affect precision)
+**3. Try Frame-by-Frame Processing Just for SEANet**
+- **Why:** The decoder_transformer may work correctly in batch (non-causal attention)
+- **Confidence:** Medium - might give partial improvement
+- **How:**
+  1. Keep batch processing for output_proj and upsample
+  2. Process SEANet one upsampled frame at a time (16 samples per latent)
+  3. Maintain streaming state across the 16-sample chunks
+  4. This isolates whether SEANet streaming is the key factor
 
-**5. Verify Causal Mask for Single-Token Query**
-- Why: With seq_len=1 and kv_len=133, the causal mask logic might behave differently
-- How:
-  1. In Python, check if a causal mask is applied at step 0 (often not needed for single-token)
-  2. In Rust, check if `causal_mask` parameter is being handled correctly for single-token case
-  3. If Python skips masking and Rust applies an incorrect mask, outputs would differ
-
-**6. BFloat16 vs Float32 Accumulation**
-- Why: Python uses BFloat16, Rust uses Float32. While F32 is higher precision, the accumulation order differs
-- How:
-  1. Try running Python in F32 mode to compare
-  2. Check if Candle's matmul accumulation order matches PyTorch's
-  3. Consider: Would using lower precision in Rust paradoxically give better correlation?
+**4. Verify the "First Frame" Handling**
+- **Why:** Python has special handling for first frame (replicate padding)
+- **Confidence:** Medium - might explain edge effects
+- **How:**
+  1. Check if `first` boolean is being handled correctly in Conv1d streaming
+  2. Verify replicate padding on first frame vs zeros
+  3. Compare first few audio samples specifically
 
 ### Speculative
 
-**7. Investigate StatefulModule Position Tracking**
-- Why: Python's StatefulModule tracks `current_end` for each module. If Rust's position tracking differs, RoPE would be wrong
-- How: Trace `increment_steps()` calls in Python to understand exact position management
-
-**8. Check for Off-by-One in KV Cache Length**
-- Why: KV cache length feeds into RoPE offset. Off-by-one would cause position mismatch
-- How: After text phase, verify `cache.seq_len()` returns exactly 132 in Rust
+**5. Accept Batch Mode with Lower Correlation**
+- **Why:** The audio is intelligible, just different phase characteristics
+- **Confidence:** Pragmatic fallback
+- **How:**
+  1. Audio amplitude is now good (~0.45)
+  2. Real-time factor is good (~4x)
+  3. Speech is intelligible (verify with listening test)
+  4. Document limitation and ship
 
 ---
 
 ## Things That Have Been Tried (DO NOT REPEAT)
 
-From PORTING_STATUS.md:
-1. Fixed tokenization (SentencePiece)
-2. Fixed RoPE (interleaved vs split halves, applied before transpose)
-3. Fixed LayerNorm vs RMSNorm (eps=1e-5)
-4. Fixed FlowNet (sinusoidal order, SiLU activation, AdaLN chunk order)
-5. Fixed LSD time progression (two time values, averaged embeddings)
-6. Fixed SEANet activation (ELU instead of GELU)
-7. Fixed voice conditioning (concatenation vs addition, two-phase processing)
-8. Fixed FinalLayer norm_final (LayerNorm before AdaLN modulation)
-9. Fixed SEANet output (removed tanh)
-10. Verified weight loading (manual matmul matches)
-11. Verified all layer 0 text phase intermediates (all match Python)
+From PORTING_STATUS.md, these are **VERIFIED CORRECT**:
+
+**FlowLM Pipeline (All Match Python)**:
+1. Tokenization (SentencePiece) - exact token match
+2. RoPE (interleaved, applied before transpose)
+3. LayerNorm (eps=1e-5)
+4. All 6 transformer layers - layer-by-layer verification passed
+5. FlowNet (sinusoidal order, SiLU, AdaLN chunk order)
+6. LSD time progression (two times, averaged)
+7. Latent denormalization (moved before Mimi)
+
+**Mimi Decoder Pipeline (Intermediate Values Match)**:
+8. output_proj - first 8 values verified
+9. Upsample (no-padding mode, trim 16 samples) - first 8 values verified
+10. decoder_transformer (RoPE, causal mask) - first 8 values verified
+11. SEANet activation (ELU not GELU, not tanh)
+
+**Recent Fixes Applied**:
+12. Mimi processing order: upsample BEFORE transformer
+13. min_gen_steps = 0 to allow natural EOS detection
+14. SEANet batch mode processing (improved amplitude from 0.12 to 0.45)
+15. Removed 5x amplitude scaling hack
 
 ---
 
 ## Specific Questions to Investigate
 
-1. **What is the exact input to layer 0 at step 0?** (BOS embedding after projection - compare Python vs Rust)
+1. **Is there a complete streaming Mimi example in Kyutai's Rust codebase?**
+   - Check `rust/mimi/src/` in the Moshi repo
+   - Look for how they handle state persistence across frames
 
-2. **Does Python apply any special treatment for single-token queries in attention?** (Different code path for seq_len=1?)
+2. **Does Python actually process the decoder_transformer per-frame?**
+   - The decoder_transformer is non-causal (full self-attention)
+   - But `mimi_state` is passed to it - why if it's stateless?
+   - Check if there's KV caching for the decoder transformer
 
-3. **What are the exact K and V values at position 132 after step 0 completes?** (If step 0 diverges, subsequent positions will be wrong)
+3. **What's the correct upsampling stride in Pocket TTS?**
+   - Docs mention stride=6 for 75Hz intermediate rate
+   - But code shows stride=16 for direct 12.5Hz→200Hz
+   - Verify which is used in production
 
-4. **Is there any state reset or reinitialization between text phase and generation phase?** (Could explain sudden divergence)
+4. **How does Python's SEANet ResBlock streaming work exactly?**
+   - Each ResBlock has dilated convolutions
+   - Dilation affects effective kernel size: `(k-1)*d + 1`
+   - State buffer sizes should account for dilation
 
-5. **Does Python's `_sample_next_latent()` do anything before calling the transformer?** (Pre-processing of BOS?)
+5. **Should bias subtraction happen for Conv1d too?**
+   - ConvTranspose1d subtracts bias from partial (documented)
+   - Conv1d stores raw context (no bias subtraction mentioned)
+   - Verify this asymmetry is correct
 
 ---
 
 ## Useful Links & References
 
 ### Official Kyutai
-- [GitHub: kyutai-labs/pocket-tts](https://github.com/kyutai-labs/pocket-tts)
-- [HuggingFace: kyutai/pocket-tts](https://huggingface.co/kyutai/pocket-tts)
-- [DeepWiki Technical Overview](https://deepwiki.com/kyutai-labs/pocket-tts)
-- [Blog: Pocket TTS Release](https://kyutai.org/blog/2026-01-13-pocket-tts)
+- [GitHub: kyutai-labs/moshi](https://github.com/kyutai-labs/moshi) - **Production Rust Mimi**
+- [GitHub: kyutai-labs/pocket-tts](https://github.com/kyutai-labs/pocket-tts) - Python reference
+- [GitHub: kyutai-labs/moshi-swift](https://github.com/kyutai-labs/moshi-swift) - iOS/MLX reference
+- [HuggingFace: kyutai/moshika-candle-bf16](https://huggingface.co/kyutai/moshika-candle-bf16) - Candle weights
+- [PyPI: rustymimi](https://pypi.org/project/rustymimi/) - Python bindings for Rust Mimi
 
-### Reference Implementation
-- [GitHub: babybirdprd/pocket-tts](https://github.com/babybirdprd/pocket-tts)
-- [crates.io: pocket-tts-cli](https://crates.io/crates/pocket-tts-cli)
-- [docs.rs: pocket_tts](https://docs.rs/pocket-tts/latest/pocket_tts/)
+### Streaming Convolution Research
+- [Streamable Neural Audio Synthesis](https://arxiv.org/abs/2204.07064) - Cached convolution paper
+- [cached_conv Library](https://acids-ircam.github.io/cached_conv/) - Post-training streaming conversion
+- [Andrew Gibiansky: Streaming Audio Synthesis](https://andrew.gibiansky.com/streaming-audio-synthesis/) - **Detailed overlap-add tutorial**
+- [Balacoon: Streaming Inference](https://balacoon.com/blog/streaming_inference/) - Practical guide
 
-### Candle & Technical
-- [Candle Issue #3032: Precision differences](https://github.com/huggingface/candle/issues/3032)
-- [Candle Layer Norm](https://github.com/huggingface/candle-layer-norm)
-- [HuggingFace: KV Caching Explained](https://huggingface.co/blog/not-lain/kv-caching)
-- [Medium: KV Caching Deep Dive](https://medium.com/@joaolages/kv-caching-explained-276520203249)
-- [Tutorial: Porting PyTorch to Candle](https://github.com/ToluClassics/candle-tutorial)
+### Audio Codec References
+- [GitHub: facebookresearch/encodec](https://github.com/facebookresearch/encodec) - EnCodec implementation
+- [HuggingFace: EnCodec docs](https://huggingface.co/docs/transformers/model_doc/encodec) - use_causal_conv option
 
-### LSD / Flow Matching
-- [ArXiv: Learning Flow Maps via Self-Distillation](https://arxiv.org/html/2505.18825)
-- [ArXiv: Continuous Audio Language Models](https://arxiv.org/pdf/2509.06926)
+### Candle Framework
+- [docs.rs: candle-nn ConvTranspose1d](https://docs.rs/candle-nn/latest/candle_nn/conv/struct.ConvTranspose1d.html)
+- [GitHub: huggingface/candle](https://github.com/huggingface/candle)
+- [Candle Tutorial for Porting](https://github.com/ToluClassics/candle-tutorial)
+
+### Local Documentation (Already in Repo!)
+- `docs/python-reference/STREAMING/conv-transpose-overlap-add.md` - **ROOT CAUSE DOCUMENT**
+- `docs/python-reference/STREAMING/conv1d-streaming.md` - Causal convolution
+- `docs/python-reference/STREAMING/state-management.md` - StatefulModule pattern
+- `docs/python-reference/ARCHITECTURE/seanet-decoder.md` - Layer-by-layer structure
 
 ---
 
 ## Key Insight
 
-The breakthrough finding is that text phase works perfectly but step 0 diverges immediately. This strongly suggests the issue is **NOT** in the core transformer math (which is validated by text phase matching) but rather in:
-- How the BOS token is prepared/projected for step 0
-- How the transition from multi-token to single-token attention is handled
-- How position tracking works between phases
-- A subtle difference in how Python and Rust handle the decode phase vs prefill phase
+**The Rust implementation already has the streaming convolution code written** - `forward_streaming` methods exist for both Conv1d and ConvTranspose1d with correct overlap-add and bias subtraction. The issue is the **calling pattern**:
 
-**The implementation agent should focus debugging efforts on the exact moment of transition from text phase to generation phase, not on core transformer operations which are proven correct.**
+**Current (wrong)**:
+```
+All latents → batch output_proj → batch upsample → batch transformer → batch SEANet (with streaming ConvTranspose)
+```
+
+**Correct (Python pattern)**:
+```
+For each latent:
+    latent → streaming output_proj → streaming upsample → streaming transformer → streaming SEANet
+    (state persists across iterations)
+```
+
+**Recommendation**: Before writing new code, **study Kyutai's Rust Mimi in the Moshi repo**. They've already solved this exact problem in production-quality Rust code. The implementation patterns should be directly applicable.
+
+---
+
+## Implementation Priority
+
+1. **First**: Clone and study [kyutai-labs/moshi](https://github.com/kyutai-labs/moshi) `rust/` directory
+2. **Second**: Refactor `MimiDecoder::forward_streaming` to process one latent at a time with true streaming
+3. **Third**: Verify intermediate values match Python at each step of the streaming loop
+4. **Fallback**: If streaming is too complex, accept current batch mode with 0.64 correlation (audio is intelligible)

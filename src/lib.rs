@@ -1,29 +1,32 @@
 //! Kyutai Pocket TTS for iOS
 //!
 //! This crate provides native iOS inference for Kyutai Pocket TTS using Candle.
-//! It exposes a UniFFI interface for Swift integration.
+//! It exposes a `UniFFI` interface for Swift integration.
 
+// Allow clippy warnings in generated UniFFI code
+#![allow(clippy::empty_line_after_doc_comments)]
+
+pub mod audio;
 pub mod config;
+pub mod engine;
 pub mod error;
 pub mod models;
 pub mod modules;
 pub mod tokenizer;
-pub mod audio;
-pub mod engine;
 
 // Test modules
 #[cfg(test)]
-mod config_tests;
-#[cfg(test)]
 mod audio_tests;
+#[cfg(test)]
+mod config_tests;
 #[cfg(test)]
 mod error_tests;
 #[cfg(test)]
 mod lib_tests;
 
-pub use config::{TTSConfig, PocketVoiceInfo};
-pub use error::PocketTTSError;
+pub use config::{PocketVoiceInfo, TTSConfig};
 pub use engine::PocketTTSEngine;
+pub use error::PocketTTSError;
 
 // UniFFI scaffolding
 uniffi::include_scaffolding!("pocket_tts");
@@ -36,14 +39,54 @@ pub fn version() -> String {
 /// Get available voices
 pub fn available_voices() -> Vec<PocketVoiceInfo> {
     vec![
-        PocketVoiceInfo { index: 0, name: "Alba".into(), gender: "female".into(), description: "Clear, neutral female voice".into() },
-        PocketVoiceInfo { index: 1, name: "Marius".into(), gender: "male".into(), description: "Warm male voice".into() },
-        PocketVoiceInfo { index: 2, name: "Javert".into(), gender: "male".into(), description: "Authoritative male voice".into() },
-        PocketVoiceInfo { index: 3, name: "Jean".into(), gender: "male".into(), description: "Gentle male voice".into() },
-        PocketVoiceInfo { index: 4, name: "Fantine".into(), gender: "female".into(), description: "Soft female voice".into() },
-        PocketVoiceInfo { index: 5, name: "Cosette".into(), gender: "female".into(), description: "Young female voice".into() },
-        PocketVoiceInfo { index: 6, name: "Eponine".into(), gender: "female".into(), description: "Expressive female voice".into() },
-        PocketVoiceInfo { index: 7, name: "Azelma".into(), gender: "female".into(), description: "Bright female voice".into() },
+        PocketVoiceInfo {
+            index: 0,
+            name: "Alba".into(),
+            gender: "female".into(),
+            description: "Clear, neutral female voice".into(),
+        },
+        PocketVoiceInfo {
+            index: 1,
+            name: "Marius".into(),
+            gender: "male".into(),
+            description: "Warm male voice".into(),
+        },
+        PocketVoiceInfo {
+            index: 2,
+            name: "Javert".into(),
+            gender: "male".into(),
+            description: "Authoritative male voice".into(),
+        },
+        PocketVoiceInfo {
+            index: 3,
+            name: "Jean".into(),
+            gender: "male".into(),
+            description: "Gentle male voice".into(),
+        },
+        PocketVoiceInfo {
+            index: 4,
+            name: "Fantine".into(),
+            gender: "female".into(),
+            description: "Soft female voice".into(),
+        },
+        PocketVoiceInfo {
+            index: 5,
+            name: "Cosette".into(),
+            gender: "female".into(),
+            description: "Young female voice".into(),
+        },
+        PocketVoiceInfo {
+            index: 6,
+            name: "Eponine".into(),
+            gender: "female".into(),
+            description: "Expressive female voice".into(),
+        },
+        PocketVoiceInfo {
+            index: 7,
+            name: "Azelma".into(),
+            gender: "female".into(),
+            description: "Bright female voice".into(),
+        },
     ]
 }
 

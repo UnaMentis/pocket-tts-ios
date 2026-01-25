@@ -22,11 +22,7 @@ pub struct MultiHeadAttention {
 }
 
 impl MultiHeadAttention {
-    pub fn new(
-        hidden_size: usize,
-        num_heads: usize,
-        vb: VarBuilder,
-    ) -> Result<Self> {
+    pub fn new(hidden_size: usize, num_heads: usize, vb: VarBuilder) -> Result<Self> {
         let head_dim = hidden_size / num_heads;
 
         let q_proj = candle_nn::linear(hidden_size, hidden_size, vb.pp("q_proj"))?;
@@ -103,9 +99,10 @@ impl MultiHeadAttention {
         let attn_output = attn_weights.matmul(&v)?;
 
         // Reshape back: [batch, num_heads, seq, head_dim] -> [batch, seq, hidden]
-        let attn_output = attn_output
-            .transpose(1, 2)?
-            .reshape((batch_size, seq_len, self.num_heads * self.head_dim))?;
+        let attn_output =
+            attn_output
+                .transpose(1, 2)?
+                .reshape((batch_size, seq_len, self.num_heads * self.head_dim))?;
 
         // Output projection
         self.o_proj.forward(&attn_output)
@@ -153,7 +150,7 @@ impl KVCache {
                 let k_new = Tensor::cat(&[k_cache, &k], 2)?;
                 let v_new = Tensor::cat(&[v_cache, &v], 2)?;
                 (k_new, v_new)
-            }
+            },
             _ => (k, v),
         };
 
@@ -190,11 +187,7 @@ pub struct FusedMultiHeadAttention {
 }
 
 impl FusedMultiHeadAttention {
-    pub fn new(
-        hidden_size: usize,
-        num_heads: usize,
-        vb: VarBuilder,
-    ) -> Result<Self> {
+    pub fn new(hidden_size: usize, num_heads: usize, vb: VarBuilder) -> Result<Self> {
         let head_dim = hidden_size / num_heads;
 
         // Kyutai Pocket uses in_proj (combined QKV) and out_proj - NO BIAS
@@ -320,7 +313,10 @@ impl FusedMultiHeadAttention {
 
             // Log K values from position 125 (first text position in cache)
             if let Ok(k_vals) = k.narrow(2, 125, 1)?.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
-                eprintln!("[Attn-L0] K[pos=125] head0 first 8 (text): {:?}", &k_vals[..8.min(k_vals.len())]);
+                eprintln!(
+                    "[Attn-L0] K[pos=125] head0 first 8 (text): {:?}",
+                    &k_vals[..8.min(k_vals.len())]
+                );
             }
 
             // Log V values too for completeness
@@ -337,7 +333,10 @@ impl FusedMultiHeadAttention {
             // attn_weights shape: [1, 16, 17, 142]
             // Log Q[0] attending to K positions (head 0, first query position)
             if let Ok(scores) = attn_weights.narrow(1, 0, 1)?.narrow(2, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
-                eprintln!("[Attn-L0] Raw attn scores head0 q0 first 8: {:?}", &scores[..8.min(scores.len())]);
+                eprintln!(
+                    "[Attn-L0] Raw attn scores head0 q0 first 8: {:?}",
+                    &scores[..8.min(scores.len())]
+                );
                 // Also log scores for positions 125-132 (text attending to text)
                 if scores.len() > 132 {
                     eprintln!("[Attn-L0] Raw attn scores head0 q0 pos125-132: {:?}", &scores[125..133]);
@@ -361,7 +360,10 @@ impl FusedMultiHeadAttention {
         // DEBUG: Log softmax attention weights
         if attn_call == 6 {
             if let Ok(probs) = attn_weights.narrow(1, 0, 1)?.narrow(2, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
-                eprintln!("[Attn-L0] Softmax attn probs head0 q0 first 8: {:?}", &probs[..8.min(probs.len())]);
+                eprintln!(
+                    "[Attn-L0] Softmax attn probs head0 q0 first 8: {:?}",
+                    &probs[..8.min(probs.len())]
+                );
                 if probs.len() > 132 {
                     eprintln!("[Attn-L0] Softmax attn probs head0 q0 pos125-132: {:?}", &probs[125..133]);
                 }
@@ -379,9 +381,10 @@ impl FusedMultiHeadAttention {
         }
 
         // Reshape back: [batch, num_heads, seq, head_dim] -> [batch, seq, hidden]
-        let attn_output = attn_output
-            .transpose(1, 2)?
-            .reshape((batch_size, seq_len, self.num_heads * self.head_dim))?;
+        let attn_output =
+            attn_output
+                .transpose(1, 2)?
+                .reshape((batch_size, seq_len, self.num_heads * self.head_dim))?;
 
         // Output projection
         let final_output = self.out_proj.forward(&attn_output)?;
@@ -389,12 +392,18 @@ impl FusedMultiHeadAttention {
         // DEBUG: Log final attention output (after out_proj)
         if is_text_l0 {
             if let Ok(out) = final_output.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
-                eprintln!("[Attn-L0] FINAL output (after out_proj) first 8: {:?}", &out[..8.min(out.len())]);
+                eprintln!(
+                    "[Attn-L0] FINAL output (after out_proj) first 8: {:?}",
+                    &out[..8.min(out.len())]
+                );
             }
         }
         if is_step0_l0 {
             if let Ok(out) = final_output.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
-                eprintln!("[Attn-L0-Step0] FINAL output (after out_proj) first 8: {:?}", &out[..8.min(out.len())]);
+                eprintln!(
+                    "[Attn-L0-Step0] FINAL output (after out_proj) first 8: {:?}",
+                    &out[..8.min(out.len())]
+                );
             }
         }
 

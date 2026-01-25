@@ -1,12 +1,12 @@
 //! Audio processing utilities for Pocket TTS
 //!
 //! Portions of this file derived from:
-//! https://github.com/babybirdprd/pocket-tts
+//! <https://github.com/babybirdprd/pocket-tts>
 //! Licensed under MIT
 
+use hound::{SampleFormat, WavSpec, WavWriter};
+use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 use std::io::Cursor;
-use hound::{WavWriter, WavSpec, SampleFormat};
-use rubato::{Resampler, SincFixedIn, SincInterpolationType, SincInterpolationParameters, WindowFunction};
 
 use crate::error::PocketTTSError;
 
@@ -26,15 +26,17 @@ pub fn samples_to_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>, Pock
 
     let mut buffer = Cursor::new(Vec::new());
     {
-        let mut writer = WavWriter::new(&mut buffer, spec)
-            .map_err(|e| PocketTTSError::AudioEncodingFailed(e.to_string()))?;
+        let mut writer =
+            WavWriter::new(&mut buffer, spec).map_err(|e| PocketTTSError::AudioEncodingFailed(e.to_string()))?;
 
         for &sample in samples {
-            writer.write_sample(sample)
+            writer
+                .write_sample(sample)
                 .map_err(|e| PocketTTSError::AudioEncodingFailed(e.to_string()))?;
         }
 
-        writer.finalize()
+        writer
+            .finalize()
             .map_err(|e| PocketTTSError::AudioEncodingFailed(e.to_string()))?;
     }
 
@@ -43,10 +45,7 @@ pub fn samples_to_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>, Pock
 
 /// Convert raw f32 PCM samples to raw bytes (for streaming)
 pub fn samples_to_bytes(samples: &[f32]) -> Vec<u8> {
-    samples
-        .iter()
-        .flat_map(|&s| s.to_le_bytes())
-        .collect()
+    samples.iter().flat_map(|&s| s.to_le_bytes()).collect()
 }
 
 /// Convert raw bytes back to f32 samples
@@ -61,11 +60,7 @@ pub fn bytes_to_samples(bytes: &[u8]) -> Vec<f32> {
 }
 
 /// Resample audio to a different sample rate
-pub fn resample(
-    samples: &[f32],
-    from_rate: u32,
-    to_rate: u32,
-) -> Result<Vec<f32>, PocketTTSError> {
+pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, PocketTTSError> {
     if from_rate == to_rate {
         return Ok(samples.to_vec());
     }
@@ -82,12 +77,9 @@ pub fn resample(
     let chunk_size = 1024;
 
     let mut resampler = SincFixedIn::<f32>::new(
-        ratio,
-        2.0,
-        params,
-        chunk_size,
-        1, // mono
-    ).map_err(|e| PocketTTSError::AudioEncodingFailed(e.to_string()))?;
+        ratio, 2.0, params, chunk_size, 1, // mono
+    )
+    .map_err(|e| PocketTTSError::AudioEncodingFailed(e.to_string()))?;
 
     let mut output = Vec::new();
     let input_frames: Vec<Vec<f32>> = vec![samples.to_vec()];
@@ -95,7 +87,8 @@ pub fn resample(
     // Process in chunks
     for chunk in input_frames[0].chunks(chunk_size) {
         let input = vec![chunk.to_vec()];
-        let resampled = resampler.process(&input, None)
+        let resampled = resampler
+            .process(&input, None)
             .map_err(|e| PocketTTSError::AudioEncodingFailed(e.to_string()))?;
 
         if !resampled.is_empty() {
@@ -108,9 +101,7 @@ pub fn resample(
 
 /// Normalize audio samples to [-1.0, 1.0] range
 pub fn normalize(samples: &mut [f32]) {
-    let max_abs = samples.iter()
-        .map(|s| s.abs())
-        .fold(0.0f32, f32::max);
+    let max_abs = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
 
     if max_abs > 0.0 && max_abs != 1.0 {
         let scale = 0.95 / max_abs; // Leave some headroom

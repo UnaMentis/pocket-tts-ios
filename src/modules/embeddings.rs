@@ -73,12 +73,7 @@ impl VoiceEmbedding {
         let voice_dim = shape.last().copied().unwrap_or(1024);
 
         let candle_dtype = convert_safetensors_dtype(embedding_data.dtype())?;
-        let embedding = Tensor::from_raw_buffer(
-            embedding_data.data(),
-            candle_dtype,
-            shape,
-            device,
-        )?;
+        let embedding = Tensor::from_raw_buffer(embedding_data.data(), candle_dtype, shape, device)?;
 
         // Squeeze out batch dimension if present: [1, seq, dim] -> [seq, dim]
         let embedding = if shape.len() == 3 && shape[0] == 1 {
@@ -96,7 +91,7 @@ impl VoiceEmbedding {
         let voice_dim = embedding.dim(candle_core::D::Minus1)?;
         // Ensure embedding is at least 2D: [seq, dim]
         let embedding = if embedding.dims().len() == 1 {
-            embedding.unsqueeze(0)?  // [dim] -> [1, dim]
+            embedding.unsqueeze(0)? // [dim] -> [1, dim]
         } else {
             embedding
         };
@@ -151,8 +146,7 @@ impl VoiceBank {
     /// Load all voices from a directory
     pub fn load_from_dir(dir: &std::path::Path, device: &Device) -> Result<Self> {
         let voice_names = [
-            "alba", "marius", "javert", "jean",
-            "fantine", "cosette", "eponine", "azelma",
+            "alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma",
         ];
 
         let mut voices = Vec::with_capacity(8);

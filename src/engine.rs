@@ -2,8 +2,8 @@
 //!
 //! This module implements the public API exposed to Swift via UniFFI.
 
-use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use candle_core::Device;
 
@@ -28,10 +28,7 @@ impl PocketTTSEngine {
         let path = PathBuf::from(&model_path);
 
         if !path.exists() {
-            return Err(PocketTTSError::IoError(format!(
-                "Model path does not exist: {}",
-                model_path
-            )));
+            return Err(PocketTTSError::IoError(format!("Model path does not exist: {}", model_path)));
         }
 
         // Use CPU device (Metal not supported on iOS in Candle)
@@ -84,11 +81,12 @@ impl PocketTTSEngine {
 
     /// Synchronous synthesis - returns complete audio
     pub fn synthesize(&self, text: String) -> Result<SynthesisResult, PocketTTSError> {
-        let mut model_guard = self.model.lock()
+        let mut model_guard = self
+            .model
+            .lock()
             .map_err(|_| PocketTTSError::InferenceFailed("Lock error".into()))?;
 
-        let model = model_guard.as_mut()
-            .ok_or(PocketTTSError::ModelNotLoaded)?;
+        let model = model_guard.as_mut().ok_or(PocketTTSError::ModelNotLoaded)?;
 
         // Generate audio
         let samples = model.synthesize(&text)?;
@@ -127,11 +125,12 @@ impl PocketTTSEngine {
         // Reset cancellation flag
         *self.is_cancelled.lock().unwrap() = false;
 
-        let mut model_guard = self.model.lock()
+        let mut model_guard = self
+            .model
+            .lock()
             .map_err(|_| PocketTTSError::InferenceFailed("Lock error".into()))?;
 
-        let model = model_guard.as_mut()
-            .ok_or(PocketTTSError::ModelNotLoaded)?;
+        let model = model_guard.as_mut().ok_or(PocketTTSError::ModelNotLoaded)?;
 
         let sample_rate = model.sample_rate();
         let is_cancelled = Arc::new(Mutex::new(false));
@@ -179,7 +178,7 @@ impl PocketTTSEngine {
             Err(e) => {
                 handler.on_error(e.to_string());
                 Err(e)
-            }
+            },
         }
     }
 
@@ -204,7 +203,7 @@ impl PocketTTSEngine {
         // Note: This would require a voice encoder model, which is a separate component
         // For now, we'll return an error indicating this feature needs the encoder
         Err(PocketTTSError::InferenceFailed(
-            "Voice cloning requires the voice encoder model (not yet implemented)".into()
+            "Voice cloning requires the voice encoder model (not yet implemented)".into(),
         ))
     }
 

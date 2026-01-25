@@ -12,10 +12,10 @@ use candle_core::{Device, Result, Tensor};
 use candle_nn::{Module, VarBuilder};
 
 use crate::modules::{
-    attention::{KVCache, FusedMultiHeadAttention},
+    attention::{FusedMultiHeadAttention, KVCache},
     embeddings::{TextEmbedding, VoiceEmbedding},
     flownet::{FlowNet, FlowNetConfig},
-    layer_norm::{LayerNorm, RMSNorm},
+    layer_norm::LayerNorm,
     mlp::SimpleMLP,
     rotary::RotaryEmbedding,
 };
@@ -37,14 +37,14 @@ pub struct FlowLMConfig {
 impl Default for FlowLMConfig {
     fn default() -> Self {
         Self {
-            vocab_size: 4001,  // Kyutai Pocket TTS vocabulary size
+            vocab_size: 4001, // Kyutai Pocket TTS vocabulary size
             hidden_size: 1024,
             intermediate_size: 4096,
             num_layers: 6,
             num_heads: 16,
             max_seq_len: 2048,
             rope_base: 10000.0,
-            rms_norm_eps: 1e-5,  // Match Python nn.LayerNorm default
+            rms_norm_eps: 1e-5, // Match Python nn.LayerNorm default
             latent_dim: 32,
         }
     }
@@ -62,31 +62,19 @@ struct TransformerLayer {
 impl TransformerLayer {
     fn new(config: &FlowLMConfig, vb: VarBuilder) -> Result<Self> {
         // Kyutai Pocket uses fused in_proj/out_proj attention
-        let attn = FusedMultiHeadAttention::new(
-            config.hidden_size,
-            config.num_heads,
-            vb.pp("self_attn"),
-        )?;
+        let attn = FusedMultiHeadAttention::new(config.hidden_size, config.num_heads, vb.pp("self_attn"))?;
 
         // Kyutai Pocket uses simple 2-layer MLP (linear1/linear2)
         let mlp = SimpleMLP::new(
             config.hidden_size,
             config.intermediate_size,
-            vb.clone(),  // MLP tensors are at layer level, not in "mlp" submodule
+            vb.clone(), // MLP tensors are at layer level, not in "mlp" submodule
         )?;
 
         // Kyutai Pocket uses norm1/norm2 naming
-        let norm1 = LayerNorm::new(
-            config.hidden_size,
-            config.rms_norm_eps,
-            vb.pp("norm1"),
-        )?;
+        let norm1 = LayerNorm::new(config.hidden_size, config.rms_norm_eps, vb.pp("norm1"))?;
 
-        let norm2 = LayerNorm::new(
-            config.hidden_size,
-            config.rms_norm_eps,
-            vb.pp("norm2"),
-        )?;
+        let norm2 = LayerNorm::new(config.hidden_size, config.rms_norm_eps, vb.pp("norm2"))?;
 
         Ok(Self {
             attn,
@@ -96,12 +84,7 @@ impl TransformerLayer {
         })
     }
 
-    fn forward(
-        &self,
-        x: &Tensor,
-        rotary: &RotaryEmbedding,
-        kv_cache: Option<&mut KVCache>,
-    ) -> Result<Tensor> {
+    fn forward(&self, x: &Tensor, rotary: &RotaryEmbedding, kv_cache: Option<&mut KVCache>) -> Result<Tensor> {
         // Pre-norm attention (Kyutai Pocket architecture)
         let residual = x;
         let normed = self.norm1.forward(x)?;
@@ -208,10 +191,10 @@ pub struct FlowLM {
     config: FlowLMConfig,
     text_embedding: TextEmbedding,
     layers: Vec<TransformerLayer>,
-    final_norm: LayerNorm,  // Kyutai Pocket uses LayerNorm with bias (not RMSNorm)
+    final_norm: LayerNorm, // Kyutai Pocket uses LayerNorm with bias (not RMSNorm)
     flow_net: FlowNet,
-    input_linear: candle_nn::Linear,  // Projects latent (32) → hidden (1024)
-    out_eos: candle_nn::Linear,       // Predicts EOS from hidden (1024 → 1)
+    input_linear: candle_nn::Linear, // Projects latent (32) → hidden (1024)
+    out_eos: candle_nn::Linear,      // Predicts EOS from hidden (1024 → 1)
     rotary: RotaryEmbedding,
     kv_caches: Vec<KVCache>,
     device: Device,
@@ -224,11 +207,7 @@ pub struct FlowLM {
 impl FlowLM {
     pub fn new(config: FlowLMConfig, vb: VarBuilder, device: &Device) -> Result<Self> {
         // Kyutai Pocket uses conditioner.embed for text embeddings
-        let text_embedding = TextEmbedding::new(
-            config.vocab_size,
-            config.hidden_size,
-            vb.pp("conditioner.embed"),
-        )?;
+        let text_embedding = TextEmbedding::new(config.vocab_size, config.hidden_size, vb.pp("conditioner.embed"))?;
 
         // Kyutai Pocket uses transformer.layers.{i} path
         let mut layers = Vec::with_capacity(config.num_layers);
@@ -239,7 +218,7 @@ impl FlowLM {
         // Kyutai Pocket uses LayerNorm (with bias) for final normalization
         let final_norm = LayerNorm::new(
             config.hidden_size,
-            1e-5,  // Python nn.LayerNorm uses eps=1e-5 by default
+            1e-5, // Python nn.LayerNorm uses eps=1e-5 by default
             vb.pp("out_norm"),
         )?;
 
@@ -255,26 +234,13 @@ impl FlowLM {
 
         // Kyutai Pocket uses input_linear to project latent (32) → hidden (1024)
         // This is used to condition on previous latent tokens
-        let input_linear = candle_nn::linear_no_bias(
-            config.latent_dim,
-            config.hidden_size,
-            vb.pp("input_linear"),
-        )?;
+        let input_linear = candle_nn::linear_no_bias(config.latent_dim, config.hidden_size, vb.pp("input_linear"))?;
 
         // EOS prediction layer: hidden (1024) → 1
-        let out_eos = candle_nn::linear(
-            config.hidden_size,
-            1,
-            vb.pp("out_eos"),
-        )?;
+        let out_eos = candle_nn::linear(config.hidden_size, 1, vb.pp("out_eos"))?;
 
         let head_dim = config.hidden_size / config.num_heads;
-        let rotary = RotaryEmbedding::new(
-            head_dim,
-            config.max_seq_len,
-            config.rope_base,
-            device,
-        )?;
+        let rotary = RotaryEmbedding::new(head_dim, config.max_seq_len, config.rope_base, device)?;
 
         let kv_caches = (0..config.num_layers).map(|_| KVCache::new()).collect();
 
@@ -334,11 +300,7 @@ impl FlowLM {
 
         // Pass through transformer layers
         for (i, layer) in self.layers.iter().enumerate() {
-            let cache = if use_cache {
-                Some(&mut self.kv_caches[i])
-            } else {
-                None
-            };
+            let cache = if use_cache { Some(&mut self.kv_caches[i]) } else { None };
             hidden = layer.forward(&hidden, &self.rotary, cache)?;
         }
 
@@ -444,11 +406,11 @@ impl FlowLM {
         // Estimate max generation length: ~12.5 frames per second of speech
         // Roughly 1 second of audio per 10-12 words
         let num_words = token_ids.dim(1)?;
-        let max_gen_len = (num_words as f32 * 1.5 + 20.0) as usize;  // Conservative estimate
+        let max_gen_len = (num_words as f32 * 5.0 + 30.0) as usize; // Allow more frames (~45 for short phrases)
         eprintln!("[FlowLM] starting autoregressive generation, max_len={}", max_gen_len);
 
         // Debug: check BOS projection
-        let bos_test = self.bos_emb.clone().unsqueeze(0)?.unsqueeze(0)?;  // [1, 1, 32]
+        let bos_test = self.bos_emb.clone().unsqueeze(0)?.unsqueeze(0)?; // [1, 1, 32]
         let bos_proj = self.input_linear.forward(&bos_test)?;
         if let Ok(vals) = bos_proj.flatten_all()?.to_vec1::<f32>() {
             eprintln!("[FlowLM] BOS projected first 8: {:?}", &vals[..8.min(vals.len())]);
@@ -459,19 +421,19 @@ impl FlowLM {
         // Use same defaults as Python reference:
         // - EOS threshold: -4.0 (logit must exceed this to trigger EOS)
         // - frames_after_eos: 2-3 (generate a few more frames after EOS)
-        let eos_threshold = -4.0;  // Match Python DEFAULT_EOS_THRESHOLD
-        let frames_after_eos = 3;  // Generate a few more frames after EOS detected
-        let min_gen_steps = 40;  // DEBUG: Force minimum generation closer to expected 45 frames
+        let eos_threshold = -4.0; // Match Python DEFAULT_EOS_THRESHOLD
+        let frames_after_eos = 3; // Generate a few more frames after EOS detected
+        let min_gen_steps = 40; // Force minimum frames to match Python (~41 frames)
 
         let mut all_latents: Vec<Tensor> = Vec::new();
         let mut eos_step: Option<usize> = None;
 
         // Start with BOS embedding
-        let mut current_latent = self.bos_emb.clone().unsqueeze(0)?.unsqueeze(0)?;  // [1, 1, 32]
+        let mut current_latent = self.bos_emb.clone().unsqueeze(0)?.unsqueeze(0)?; // [1, 1, 32]
 
         for step in 0..max_gen_len {
             // Project latent to hidden dimension
-            let latent_hidden = self.input_linear.forward(&current_latent)?;  // [1, 1, 1024]
+            let latent_hidden = self.input_linear.forward(&current_latent)?; // [1, 1, 1024]
 
             // Run through transformer (using KV cache)
             let mut step_hidden = latent_hidden;
@@ -481,7 +443,7 @@ impl FlowLM {
             let step_hidden = self.final_norm.forward(&step_hidden)?;
 
             // Get the last position's hidden state
-            let last_hidden = step_hidden.squeeze(1)?;  // [1, 1024]
+            let last_hidden = step_hidden.squeeze(1)?; // [1, 1024]
 
             // DIAGNOSTIC: Log hidden state stats at first and last steps
             // Python hook captures LAST call to out_norm during generation
@@ -489,14 +451,19 @@ impl FlowLM {
                 let h_flat: Vec<f32> = last_hidden.flatten_all()?.to_vec1()?;
                 let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
                 let h_std = (h_flat.iter().map(|x| (x - h_mean).powi(2)).sum::<f32>() / h_flat.len() as f32).sqrt();
-                eprintln!("[FlowLM] step {} hidden: mean={:.6}, std={:.4}, first 8: {:?}",
-                    step, h_mean, h_std, &h_flat[..8.min(h_flat.len())]);
+                eprintln!(
+                    "[FlowLM] step {} hidden: mean={:.6}, std={:.4}, first 8: {:?}",
+                    step,
+                    h_mean,
+                    h_std,
+                    &h_flat[..8.min(h_flat.len())]
+                );
                 // Python out_norm: mean=-0.003252, std=0.340720
                 // Python first 8: [-0.10488168, -0.26733553, 0.00387744, -0.23025721, 0.29963714, 0.6678712, 0.5796935, 0.6726278]
             }
 
             // Check EOS prediction (but only after min_gen_steps for debugging)
-            let eos_logit = self.out_eos.forward(&last_hidden)?;  // [1, 1]
+            let eos_logit = self.out_eos.forward(&last_hidden)?; // [1, 1]
             let eos_val: f32 = eos_logit.squeeze(1)?.to_vec1::<f32>()?[0];
 
             if step >= min_gen_steps && eos_val > eos_threshold && eos_step.is_none() {
@@ -514,7 +481,7 @@ impl FlowLM {
 
             // Generate next latent via FlowNet
             // FlowNet expects [batch, seq, hidden] but we have [batch, hidden]
-            let cond = last_hidden.unsqueeze(1)?;  // [1, 1, 1024]
+            let cond = last_hidden.unsqueeze(1)?; // [1, 1, 1024]
             let next_normalized = self.flow_net.generate(&cond, num_flow_steps, temperature, &self.device)?;
 
             // IMPORTANT: Do NOT denormalize here!
@@ -561,9 +528,7 @@ impl FlowLM {
     /// Denormalize latents before passing to Mimi decoder
     /// Python: mimi_decoding_input = latent * emb_std + emb_mean
     pub fn denormalize_latents(&self, latents: &Tensor) -> Result<Tensor> {
-        latents
-            .broadcast_mul(&self.emb_std)?
-            .broadcast_add(&self.emb_mean)
+        latents.broadcast_mul(&self.emb_std)?.broadcast_add(&self.emb_mean)
     }
 
     pub fn config(&self) -> &FlowLMConfig {

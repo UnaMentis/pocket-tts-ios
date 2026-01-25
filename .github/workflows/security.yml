@@ -1,0 +1,77 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 3 * * 0'  # Weekly on Sundays at 3am UTC
+  workflow_dispatch:
+
+jobs:
+  audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run audit
+        run: cargo audit
+        continue-on-error: true  # Warn but don't fail initially
+
+  secrets:
+    name: Secrets Detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deny:
+    name: License & Dependency Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny
+
+      - name: Check dependencies
+        run: cargo deny check
+        continue-on-error: true  # Don't fail until deny.toml is configured
+
+  supply-chain:
+    name: Supply Chain Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+
+      - name: Check for yanked crates
+        run: |
+          cargo update --dry-run 2>&1 | grep -i "yanked" || echo "No yanked crates detected"
+
+      - name: Verify Cargo.lock
+        run: |
+          if [ ! -f Cargo.lock ]; then
+            echo "Warning: No Cargo.lock found. Consider committing it for reproducible builds."
+          else
+            echo "Cargo.lock present"
+          fi

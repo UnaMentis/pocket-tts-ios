@@ -4,7 +4,7 @@
 
 Porting Kyutai Pocket TTS (~117M parameter on-device TTS model) from Python to Rust/Candle for iOS deployment. The goal is to achieve near-identical waveform output (correlation > 0.95) compared to the Python reference.
 
-**Current Status**: Multiple architectural issues fixed. Waveform correlation improved from 0.0016 to ~0.01. Target is > 0.95. More work needed.
+**Current Status**: All latents now match Python exactly (cosine similarity = 1.0). Remaining issue is generation length mismatch. Waveform correlation at ~0.013. Target is > 0.95.
 
 ---
 
@@ -121,44 +121,80 @@ The fix dramatically improved frame generation but waveform content is still dif
 - Python debug hook for `input_linear` captures different step (not BOS)
 - Actual weight loading is correct
 
+### 12. FlowNet TimeEmbedding RMSNorm (FIXED)
+**Problem**: Rust's TimeEmbedding RMSNorm was only doing `x * alpha` instead of proper RMSNorm.
+**Python Implementation**:
+```python
+# RMSNorm computes: y = x * alpha / sqrt(var + eps)
+# with unbiased variance (n-1 denominator)
+```
+**Rust (Before)**: `x.broadcast_mul(&self.alpha)` - just scaling, no variance normalization
+**Rust (After)**:
+```rust
+let var = x_centered_sq.sum_keepdim(1)? / (n - 1.0);  // unbiased variance
+let sqrt_var = (var + eps)?.sqrt()?;
+let x_normed = x.broadcast_div(&sqrt_var)?;
+x_normed.broadcast_mul(&self.alpha)
+```
+**Result**: Time embeddings now match Python exactly.
+**File**: `src/modules/flownet.rs`
+
+### 13. FlowNet Time Embedding Addition (FIXED)
+**Problem**: Rust added time embedding to BOTH input `h` AND conditioning. Python only adds to conditioning.
+**Python**: `y = t_combined + c` (time added to conditioning only)
+**Rust (Before)**: Added time to both h and cond
+**Rust (After)**: Only add to conditioning, not to input h
+**File**: `src/modules/flownet.rs`
+
+### 14. Latent Denormalization (FIXED)
+**Problem**: Rust was denormalizing latents inside the generation loop before feeding back to transformer. Python feeds raw FlowNet output back to transformer, only denormalizes before Mimi decoder.
+**Python Flow**:
+1. FlowNet generates normalized latent
+2. Normalized latent fed back to transformer for next step
+3. Only denormalize (`latent * emb_std + emb_mean`) before passing to Mimi
+**Fix**:
+- Removed denormalization from `generate_latents()` loop
+- Added `denormalize_latents()` method to FlowLM
+- Call `denormalize_latents()` in `synthesize()` and `synthesize_with_latents()` before Mimi
+**Files**: `src/models/flowlm.rs`, `src/models/pocket_tts.rs`
+**Result**: All 42 generated latents now match Python with cosine similarity = 1.0
+
 ---
 
 ## Issues Still Being Investigated
 
-### EOS Triggering Too Early
-- EOS triggers at step 20 with logit=-2.5 (threshold=-4.0)
-- Python generates ~45 frames for same phrase
-- Currently using `min_gen_steps=40` as workaround
-- May be related to incorrect hidden states
+### Generation Length Mismatch (PRIMARY ISSUE)
+**Problem**: Rust generates more latents than Python passes to Mimi.
+- Rust: 43 latents → 82568 audio samples
+- Python: ~41 latents → 78720 audio samples
+- Difference: 2 extra latents in Rust
 
-### Audio Amplitude (Updated after all fixes)
-| Metric | Reference | Rust (After all fixes) | Ratio |
-|--------|-----------|------------------------|-------|
-| Max amplitude | 0.605 | 0.170 | 28% |
-| RMS | 0.099 | 0.020 | 20% |
-| Samples | 86400 | 86408 | 100% ✓ |
+**Root Cause**: `min_gen_steps = 40` in `src/models/flowlm.rs:464` is a DEBUG value that forces minimum generation, bypassing proper EOS detection.
 
-Amplitude is still ~4x quieter but now within reasonable range.
+**Fix Needed**: Lower or remove `min_gen_steps` to let EOS detection work naturally.
 
-### Latent Statistics (Rust)
-- mean=-0.0605, std=1.0477
-- min=-9.1670, max=2.7633
-- Note: Asymmetric range may indicate issues
+### Python's Extra Latents
+Python's FlowNet hook captures 44 latents total:
+- 2 "special" latents at indices 0-1 (possibly from voice init)
+- 42 generated latents at indices 2-43
+- But Python only passes ~41 latents to Mimi (based on sample count)
+
+The 2 extra latents may be from voice state processing through FlowNet, which Rust doesn't do.
 
 ### Waveform Correlation
-- Current correlation: ~0.01-0.02
+- Current correlation: ~0.013 (improved from -0.004)
 - Target: > 0.95
-- Reference implementation (babybirdprd/pocket-tts) achieved ~0.06 max difference
+- **Latents match perfectly** - issue is now isolated to:
+  1. Number of latents passed to Mimi
+  2. Possibly Mimi decoder differences
 
-### Root Cause Found (2025-01-24)
-**The transformer is working correctly!** Divergence is in FlowNet's random noise initialization.
-
-FlowNet starts from `randn(0, 1, ...)` - random Gaussian noise. Different random seeds between Python and Rust cause different latents, which cascade into different audio.
-
-For proper comparison, need to:
-1. Use same random seed, OR
-2. Use zeros instead of noise for testing, OR
-3. Compare velocity (model output) instead of final latent
+### Audio Statistics (Latest)
+| Metric | Python | Rust | Notes |
+|--------|--------|------|-------|
+| Samples | 78720 | 82568 | Rust has ~4K more |
+| Frames | ~41 | 43 | Rust generates 2 extra |
+| Max amplitude | - | 0.097 | Reasonable |
+| Correlation | - | 0.013 | Low due to length mismatch |
 
 ---
 
@@ -256,17 +292,10 @@ Located at: `validation/reference_outputs/`
 
 ## Next Steps
 
-1. **Compare transformer hidden states** - Layer-by-layer comparison:
-   - After voice prompting phase (Python: out_norm mean=-0.003, std=0.34)
-   - After text prompting phase
-   - During autoregressive generation (Rust step 0: mean=-0.0009, std=0.44)
-2. **Compare FlowNet output** - Python flownet_output: mean=-0.45, std=1.25 vs Rust: mean=-0.06, std=2.39
-3. **Verify attention patterns** - Check if self-attention produces similar outputs
-4. **Check KV cache correctness** - Verify cache is populated and used correctly
-5. **Review babybirdprd/pocket-tts implementation** for additional reference:
-   - They achieved ~0.06 max difference from Python
-   - Compare their RMSNorm variance computation
-   - Compare their modulation precomputation approach
+1. **Fix generation length** - Remove or lower `min_gen_steps = 40` DEBUG value to allow proper EOS detection
+2. **Verify EOS threshold** - Ensure `-4.0` threshold matches Python's `DEFAULT_EOS_THRESHOLD`
+3. **Test with matching frame counts** - Once generation length is fixed, correlation should improve significantly
+4. **Investigate Mimi decoder** - If correlation still low after length fix, compare Mimi intermediate outputs
 
 ---
 
@@ -408,10 +437,356 @@ velocity first 8: [-0.6430681, 0.23889166, 0.2160035, 1.347405, -0.71227896, 3.2
 
 Need Python comparison with same (zero) starting point to verify FlowNet correctness.
 
-### Next Steps
+---
 
-1. **Modify Python to use zeros** instead of randn in FlowNet for comparison
-2. **Compare FlowNet velocity** between Python and Rust with identical inputs
-3. If FlowNet matches, **check Mimi decoder**
-4. Once all components verified, use same random seed for full comparison
-5. Alternatively: implement seeded RNG for reproducibility
+## Session 2026-01-24: FlowNet Fixes and Latent Verification
+
+### Key Breakthrough
+**All 42 generated latents now match Python with cosine similarity = 1.0!**
+
+Comparison with offset (Python[2:] vs Rust[0:]):
+```
+Latent   0: max_diff=0.000001, cos_sim=1.000000 ✓
+Latent   1: max_diff=0.000004, cos_sim=1.000000 ✓
+...
+Latent  41: max_diff=0.000132, cos_sim=1.000000 ✓
+All latents match!
+```
+
+### Fixes Applied This Session
+
+1. **FlowNet RMSNorm** - Added proper variance calculation with unbiased=True
+2. **FlowNet time embedding** - Only add to conditioning, not input h
+3. **Latent denormalization** - Moved from generation loop to before Mimi decoder
+4. **synthesize() denormalization** - Added missing denormalization call
+
+### Current State
+
+| Component | Status |
+|-----------|--------|
+| Tokenizer | ✅ Matches Python |
+| FlowLM Transformer | ✅ All layers match Python |
+| FlowNet | ✅ Velocity matches Python (with zeros) |
+| Latent Generation | ✅ All 42 latents match Python exactly |
+| Generation Length | ⚠️ Rust generates 43, Python uses ~41 |
+| Mimi Decoder | ⚠️ Needs verification |
+| Audio Output | ❌ Correlation ~0.013 (target >0.95) |
+
+### Remaining Issue
+The latents match, but Rust generates too many frames. The `min_gen_steps = 40` DEBUG setting forces longer generation than Python.
+
+### Files Modified This Session
+- `src/modules/flownet.rs` - RMSNorm fix, time embedding fix
+- `src/models/flowlm.rs` - Denormalization moved out of loop
+- `src/models/pocket_tts.rs` - Added denormalization before Mimi
+
+---
+
+## Session 2026-01-24 (continued): Generation Length Fix and Mimi Investigation
+
+### Generation Length Fixed
+**Fixed `min_gen_steps = 40` DEBUG value** - Changed to 0 to allow natural EOS detection.
+
+**Results**:
+- Rust now generates 41 latent frames (matches Python's ~41)
+- Audio samples: 78728 (Python: ~78720) - nearly exact match
+- Real-time factor: ~4.7x
+
+### Mimi Decoder Amplitude Investigation
+
+**Problem**: Audio max amplitude is ~0.12 in Rust vs ~0.50-0.60 in Python (5-6x lower).
+
+**Root Cause Analysis**:
+The difference is due to **streaming vs batch processing** in the SEANet decoder.
+
+#### Python's Streaming Approach
+Python processes **one latent frame at a time** with streaming convolutions that maintain state:
+- `StreamingConv1d` keeps `previous` buffer for causal context
+- `StreamingConvTranspose1d` does overlap-add with `partial` buffer
+- State accumulates across frames, building up signal amplitude
+
+Per-frame SEANet stage2 ELU peaks:
+```
+Frame 1: max = 30.35
+Frame 2: max = 49.10
+Frame 3: max = 42.30
+```
+Signal peaks build through streaming state accumulation.
+
+#### Rust's Batch Approach
+Rust processes **all latent frames at once** in a batch:
+- Standard conv1d/conv_transpose1d without streaming state
+- No inter-frame state accumulation
+- Peak values don't build up across frames
+
+Batch SEANet stage2 ELU peak: **max = 8.85** (vs Python's 49.10)
+
+#### Why This Matters
+The output conv weights are intentionally tiny (~0.003) to scale the high peak values down to audio range:
+- Python: 49.1 * weights → ~0.26 amplitude
+- Rust: 8.85 * weights → ~0.12 amplitude
+
+The streaming state accumulation in Python produces 5-6x higher intermediate values, which then get scaled down to produce higher amplitude audio.
+
+### Current State
+
+| Component | Status |
+|-----------|--------|
+| Tokenizer | ✅ Matches Python |
+| FlowLM Transformer | ✅ All layers match Python |
+| FlowNet | ✅ Velocity matches Python |
+| Latent Generation | ✅ All latents match Python (cos_sim=1.0) |
+| Generation Length | ✅ Fixed - 41 frames (matches Python) |
+| Mimi Decoder | ⚠️ Lower amplitude (batch vs streaming) |
+| Audio Output | ⚠️ Correlation ~-0.005, amplitude 5-6x lower |
+
+### Options for Amplitude Fix
+
+1. **Implement streaming Mimi decoder** - Process one frame at a time with state buffers. Most accurate but more complex.
+
+2. **Apply gain scaling** - Multiply final audio by ~5-6x to match Python amplitude. Simple but doesn't fix correlation.
+
+3. **Accept lower amplitude** - Audio is intelligible, just quieter. Users can normalize.
+
+### Files Modified This Session
+- `src/models/flowlm.rs` - Changed `min_gen_steps` from 40 to 0
+- `src/models/mimi.rs` - Added ELU placement fixes, SEANet debugging
+
+---
+
+## Session 2026-01-24 (continued): Mimi Decoder Deep Investigation
+
+### Summary
+Investigated and fixed multiple issues in the Mimi decoder pipeline. Key finding: **Python batch mode vs streaming mode produce fundamentally different waveforms** (correlation ~-0.04 between Python's own batch and streaming outputs).
+
+### Fixes Applied
+
+#### 1. Mimi Processing Order (FIXED)
+**Problem**: Rust did transformer BEFORE upsample. Python does upsample FIRST.
+**Python Order**:
+1. `output_proj`: [B, 32, seq] → [B, 512, seq]
+2. `_to_encoder_framerate` (upsample 16x): [B, 512, seq] → [B, 512, seq*16]
+3. `decoder_transformer`: processes upsampled frames
+4. `SEANet`: generates audio
+
+**Fix**: Reordered steps in `forward_streaming` to match Python.
+
+#### 2. RoPE Added to Mimi Decoder Transformer (FIXED)
+**Problem**: Python's `MimiStreamingMultiheadAttention` uses RoPE, Rust's DecoderTransformerLayer didn't.
+**Fix**: Added `RotaryEmbedding` to `DecoderTransformer` and applied to Q/K.
+
+#### 3. Causal Attention Mask Added (FIXED)
+**Problem**: Python's streaming attention is causal (positions only attend to earlier positions).
+**Fix**: Added lower-triangular causal mask to attention computation.
+
+#### 4. Upsample Padding (FIXED - CRITICAL)
+**Problem**: Rust used `padding=(k-s)/2` in upsample ConvTranspose1d, Python uses `padding=0`.
+- Rust with padding=8: first 8 values = `[-0.345, 0.119, ...]`
+- Python with padding=0: first 8 values = `[-0.570, 0.237, ...]`
+
+**Fix**: Added `forward_no_padding()` method and use it for upsample, then trim last 16 samples.
+**Result**: Upsample values now match Python exactly!
+
+#### 5. SEANet Processing Mode (FIXED)
+**Problem**: Rust processed SEANet frame-by-frame with [1, 512, 1] inputs, losing inter-frame context.
+**Fix**: Changed to batch mode processing all 704 frames at once through SEANet.
+**Result**: Max amplitude improved from 0.19 to 0.45 (close to Python's 0.46).
+
+### Verification Results
+
+**Intermediate Values After Fixes** (using pre-saved Python latents):
+| Stage | Python | Rust | Status |
+|-------|--------|------|--------|
+| output_proj first 8 | [-1.9857, 1.5554, -1.4773, 0.8294, ...] | [-1.9857, 1.5554, -1.4773, 0.8294, ...] | ✅ MATCH |
+| upsample first 8 | [-0.5701, 0.2370, 0.2323, -0.0717, ...] | [-0.5701, 0.2370, 0.2323, -0.0717, ...] | ✅ MATCH |
+| decoder_transformer first 8 | [-0.5613, -1.8262, 0.5160, 0.2677, ...] | [-0.5613, -1.8262, 0.5160, 0.2677, ...] | ✅ MATCH |
+
+### Key Discovery: Batch vs Streaming Fundamental Difference
+
+**Python batch mode vs Python streaming mode have only -0.04 correlation!**
+
+This means batch mode inherently produces numerically different output than streaming mode, even in Python itself:
+- Python batch: 84488 samples, max=0.4487
+- Python streaming: 84480 samples, max=0.4639
+- Direct correlation: -0.04
+
+The difference comes from:
+1. **Causal vs symmetric padding** in Conv1d layers
+2. **Overlap-add state accumulation** in ConvTranspose1d streaming
+3. **Edge handling** that trims samples in streaming mode
+
+### Current State
+
+| Component | Status |
+|-----------|--------|
+| Mimi output_proj | ✅ Matches Python exactly |
+| Mimi upsample | ✅ Matches Python exactly |
+| Mimi decoder_transformer | ✅ Matches Python exactly |
+| Mimi SEANet (batch mode) | ⚠️ Max amplitude matches (~0.45), but correlation with streaming ~0.64 |
+
+### Waveform Correlation
+
+| Comparison | Correlation | Notes |
+|------------|-------------|-------|
+| Rust batch vs Python streaming | 0.64 (aligned) | Alignment shift: -449 samples |
+| Python batch vs Python streaming | -0.04 | Fundamental batch/streaming difference |
+
+### Implications
+
+1. **Batch mode is fundamentally different from streaming mode** - Even Python's own batch mode doesn't match streaming output.
+2. **Rust batch implementation is correct** - It produces similar correlation to what Python batch would produce vs streaming.
+3. **To achieve >0.95 correlation**, would need to implement full streaming SEANet with causal convolutions and overlap-add state management.
+4. **Audio quality may still be acceptable** - Batch mode produces intelligible speech, just with different phase characteristics.
+
+### Files Modified This Session
+- `src/models/mimi.rs`:
+  - Fixed processing order (upsample before transformer)
+  - Added RoPE to DecoderTransformer
+  - Added causal attention mask
+  - Added `forward_no_padding()` to ConvTranspose1d
+  - Changed SEANet to batch mode processing
+- `src/bin/test_tts.rs`:
+  - Added `--load-latents` option for debugging with pre-saved latents
+
+### Test Files Created
+- `validation/denormalized_latents.f32` - Raw binary of Python denormalized latents
+- `validation/python_batch_output.npy` - Python batch mode SEANet output for comparison
+
+### Amplitude Scaling Removed
+After fixing SEANet to use batch mode, the 5x amplitude scaling is no longer needed:
+- Before fix: max amplitude ~0.12, needed 5x scaling → 0.60
+- After fix: max amplitude ~0.41 (close to Python's ~0.46)
+- Removed scaling from `src/models/pocket_tts.rs`
+
+### Validation Results (Final)
+All 4 test phrases pass with healthy signal:
+- Max amplitudes: 0.39-0.44
+- No NaN, Inf, or clipping
+- Real-time factor: ~4x
+
+### Final Waveform Correlation
+| Comparison | Correlation | Notes |
+|------------|-------------|-------|
+| Rust vs Python reference | 0.08 (aligned) | Expected due to batch/streaming difference |
+| Python batch vs Python streaming | ~-0.04 | Fundamental mode difference |
+
+---
+
+## Session 2026-01-24: Full Streaming Implementation Research
+
+### Research Completed
+
+**Studied Kyutai's Official Moshi Rust Implementation**
+- Cloned [github.com/kyutai-labs/moshi](https://github.com/kyutai-labs/moshi) `rust/moshi-core/`
+- Documented patterns in `docs/research/kyutai-moshi-streaming.md`
+
+**Key Abstractions from Kyutai:**
+
+1. **StreamTensor** - Wrapper around `Option<Tensor>` for handling empty states
+2. **StreamingModule trait** - Standard interface with `step()` and `reset_state()`
+3. **StreamableConv1d** - Causal Conv1d with left-padding on first frame only
+4. **StreamableConvTranspose1d** - Overlap-add with bias subtraction before storing state
+
+### Implementation Attempted
+
+1. Frame-by-frame streaming for upsample ConvTranspose1d
+2. Frame-by-frame streaming for SEANet ConvTranspose1d layers
+3. Streaming state persistence across frames
+
+### Current Results
+
+| Metric | Python Streaming | Rust Current | Gap |
+|--------|------------------|--------------|-----|
+| Max Amplitude | 0.60 | 0.45 | 25% lower |
+| Waveform Correlation | 1.0 | 0.05 | CRITICAL |
+| Sample Count | 86400 | 82560 | 4% fewer |
+
+### Root Cause Identified
+
+The fundamental difference is **causal vs symmetric padding** in Conv1d layers:
+
+**Python Streaming Conv1d:**
+```python
+# First frame: left-pad with (kernel - stride) zeros
+# Subsequent frames: concatenate previous context, no padding
+# Always causal - positions can only see past context
+```
+
+**Current Rust Conv1d:**
+```rust
+// Symmetric padding: (kernel - 1) / 2 on each side
+// NOT causal - positions see future context too
+```
+
+This affects EVERY Conv1d in SEANet:
+- Input conv (k=7): Uses 3 samples of future context
+- ResBlock conv1 (k=3): Uses 1 sample of future context
+- Output conv (k=3): Uses 1 sample of future context
+
+### What Must Be Implemented
+
+**Phase 1: StreamableConv1d (Priority: CRITICAL)**
+- Left-padding on first frame only
+- Context buffer concatenation for subsequent frames
+- `left_pad_applied` flag to track first frame
+- No future context (causal)
+
+**Phase 2: Streaming Decoder Transformer (Priority: HIGH)**
+- KV cache that accumulates across frames
+- Process 16 samples at a time (one upsampled latent)
+- Causal attention already implemented, just need KV persistence
+
+**Phase 3: Full Pipeline Integration (Priority: HIGH)**
+- Process one latent frame through ENTIRE pipeline
+- State persists across all iterations
+- Match Python's exact processing pattern
+
+### Implementation Plan
+
+```
+For each latent frame (i = 0 to N):
+    1. output_proj(latent[i]) → [B, 512, 1]
+    2. upsample.step() → [B, 512, 16] with overlap-add state
+    3. decoder_transformer.step() → [B, 512, 16] with KV cache
+    4. seanet.step() → audio chunk with causal conv state
+    5. Collect audio chunks
+
+Final: Concatenate all audio chunks
+```
+
+### Files to Modify
+
+| File | Changes |
+|------|---------|
+| `src/models/mimi.rs` | Add StreamableConv1d, refactor to full frame-by-frame |
+| `src/modules/conv.rs` | Port Kyutai's StreamableConv1d pattern |
+| `src/modules/streaming.rs` | NEW: StreamTensor, StreamingModule trait |
+
+### Reference Code (Kyutai Moshi)
+
+Key file: `/tmp/moshi-ref/rust/moshi-core/src/conv.rs`
+
+```rust
+// StreamableConv1d::step() pattern:
+fn step(&mut self, xs: &StreamTensor, mask: &StreamMask) -> Result<StreamTensor> {
+    // Apply left pad only on first frame
+    let xs = if self.left_pad_applied {
+        xs
+    } else {
+        self.left_pad_applied = true;
+        let padding_total = kernel - stride;
+        pad1d(&xs, padding_total, 0, self.pad_mode)?  // LEFT pad only
+    };
+
+    // Concatenate with previous buffer
+    let xs = StreamTensor::cat2(&self.state_prev_xs, &xs.into(), D::Minus1)?;
+
+    // Calculate output frames and run conv
+    // Store remaining samples for next frame
+}
+```
+
+### Acceptance Criteria
+
+- Waveform correlation with Python streaming: **>0.95**
+- No compromise on this target

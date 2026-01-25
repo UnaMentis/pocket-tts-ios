@@ -12,11 +12,11 @@ use super::layer_norm::{layer_norm_no_affine, LayerNorm};
 /// FlowNet configuration
 #[derive(Debug, Clone)]
 pub struct FlowNetConfig {
-    pub hidden_dim: usize,      // 512
-    pub cond_dim: usize,        // 1024 (from transformer)
-    pub latent_dim: usize,      // 32
-    pub num_res_blocks: usize,  // 6
-    pub time_embed_dim: usize,  // 256 (freqs * 2)
+    pub hidden_dim: usize,     // 512
+    pub cond_dim: usize,       // 1024 (from transformer)
+    pub latent_dim: usize,     // 32
+    pub num_res_blocks: usize, // 6
+    pub time_embed_dim: usize, // 256 (freqs * 2)
 }
 
 impl Default for FlowNetConfig {
@@ -64,23 +64,28 @@ impl TimeEmbedding {
         let a_max = alpha_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         eprintln!("[TimeEmbed] alpha range: [{:.4}, {:.4}]", a_min, a_max);
 
-        Ok(Self { freqs, mlp_0, mlp_2, alpha })
+        Ok(Self {
+            freqs,
+            mlp_0,
+            mlp_2,
+            alpha,
+        })
     }
 
     fn forward(&self, t: &Tensor) -> Result<Tensor> {
         // Create sinusoidal embedding from time
         // CRITICAL: Python uses [cos, sin] order, not [sin, cos]!
-        let t_expanded = t.unsqueeze(1)?;  // [batch, 1]
-        let freqs_expanded = self.freqs.unsqueeze(0)?;  // [1, 128]
+        let t_expanded = t.unsqueeze(1)?; // [batch, 1]
+        let freqs_expanded = self.freqs.unsqueeze(0)?; // [1, 128]
         let angles = t_expanded.broadcast_mul(&freqs_expanded)?;
 
         let cos_emb = angles.cos()?;
         let sin_emb = angles.sin()?;
-        let time_emb = Tensor::cat(&[cos_emb, sin_emb], 1)?;  // [batch, 256] - COS first!
+        let time_emb = Tensor::cat(&[cos_emb, sin_emb], 1)?; // [batch, 256] - COS first!
 
         // MLP with SiLU (not GELU!) - matches Python TimestepEmbedder
         let x = self.mlp_0.forward(&time_emb)?;
-        let x = candle_nn::ops::silu(&x)?;  // Python uses SiLU, not GELU
+        let x = candle_nn::ops::silu(&x)?; // Python uses SiLU, not GELU
         let x = self.mlp_2.forward(&x)?;
 
         // Apply RMSNorm with learnable alpha (NOT just x * alpha!)
@@ -89,8 +94,8 @@ impl TimeEmbedding {
         //
         // variance = mean((x - mean(x))^2) * n / (n-1) for unbiased=True
         let eps = 1e-5f64;
-        let n = x.dim(1)? as f64;  // hidden_dim = 512
-        let x_mean = x.mean_keepdim(1)?;  // mean along hidden dim
+        let n = x.dim(1)? as f64; // hidden_dim = 512
+        let x_mean = x.mean_keepdim(1)?; // mean along hidden dim
         let x_centered = x.broadcast_sub(&x_mean)?;
         let x_centered_sq = x_centered.sqr()?;
         // unbiased variance: sum / (n-1)
@@ -127,7 +132,7 @@ impl AdaLNModulation {
         // Python order is [shift, scale, gate] - return (shift, scale, gate)
         let chunk_dim = out.dims().len() - 1;
         let chunks = out.chunk(3, chunk_dim)?;
-        Ok((chunks[0].clone(), chunks[1].clone(), chunks[2].clone()))  // shift, scale, gate
+        Ok((chunks[0].clone(), chunks[1].clone(), chunks[2].clone())) // shift, scale, gate
     }
 }
 
@@ -156,7 +161,7 @@ impl FinalLayerAdaLN {
         // Python order is [shift, scale] - return (shift, scale)
         let chunk_dim = out.dims().len() - 1;
         let chunks = out.chunk(2, chunk_dim)?;
-        Ok((chunks[0].clone(), chunks[1].clone()))  // shift, scale
+        Ok((chunks[0].clone(), chunks[1].clone())) // shift, scale
     }
 }
 
@@ -176,7 +181,12 @@ impl ResBlock {
         let mlp_2 = candle_nn::linear(hidden_dim, hidden_dim, vb.pp("mlp.2"))?;
         let adaln = AdaLNModulation::new(hidden_dim, vb.pp("adaLN_modulation"))?;
 
-        Ok(Self { in_ln, mlp_0, mlp_2, adaln })
+        Ok(Self {
+            in_ln,
+            mlp_0,
+            mlp_2,
+            adaln,
+        })
     }
 
     fn forward(&self, x: &Tensor, cond: &Tensor) -> Result<Tensor> {
@@ -190,7 +200,7 @@ impl ResBlock {
 
         // MLP with SiLU (Python uses SiLU in ResBlock too)
         let h = self.mlp_0.forward(&h)?;
-        let h = candle_nn::ops::silu(&h)?;  // SiLU, not GELU
+        let h = candle_nn::ops::silu(&h)?; // SiLU, not GELU
         let h = self.mlp_2.forward(&h)?;
 
         // Gated residual
@@ -228,8 +238,10 @@ impl FinalLayer {
             let shift_max = shift_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let scale_min = scale_flat.iter().cloned().fold(f32::INFINITY, f32::min);
             let scale_max = scale_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            eprintln!("[FinalLayer] shift range=[{:.4}, {:.4}], scale range=[{:.4}, {:.4}]",
-                     shift_min, shift_max, scale_min, scale_max);
+            eprintln!(
+                "[FinalLayer] shift range=[{:.4}, {:.4}], scale range=[{:.4}, {:.4}]",
+                shift_min, shift_max, scale_min, scale_max
+            );
         }
 
         // Python's FinalLayer applies modulation AFTER norm_final (which has no affine)
@@ -305,32 +317,26 @@ impl FlowNet {
     /// * `hidden` - Conditioning from transformer [batch, seq, 1024]
     /// * `num_steps` - Number of flow steps (more = higher quality)
     /// * `temperature` - Sampling temperature
-    pub fn generate(
-        &self,
-        hidden: &Tensor,
-        num_steps: usize,
-        _temperature: f32,
-        device: &Device,
-    ) -> Result<Tensor> {
+    pub fn generate(&self, hidden: &Tensor, num_steps: usize, _temperature: f32, device: &Device) -> Result<Tensor> {
         let (batch_size, seq_len, _) = hidden.dims3()?;
 
         // Get conditioning embedding
-        let cond = self.cond_embed.forward(hidden)?;  // [batch, seq, 512]
+        let cond = self.cond_embed.forward(hidden)?; // [batch, seq, 512]
 
         // DIAGNOSTIC: Log conditioning stats
         let cond_flat: Vec<f32> = cond.flatten_all()?.to_vec1()?;
         let c_mean = cond_flat.iter().sum::<f32>() / cond_flat.len() as f32;
         let c_std = (cond_flat.iter().map(|x| (x - c_mean).powi(2)).sum::<f32>() / cond_flat.len() as f32).sqrt();
-        eprintln!("[FlowNet] conditioning (after cond_embed) first 8: {:?}", &cond_flat[..8.min(cond_flat.len())]);
+        eprintln!(
+            "[FlowNet] conditioning (after cond_embed) first 8: {:?}",
+            &cond_flat[..8.min(cond_flat.len())]
+        );
         eprintln!("[FlowNet] conditioning: mean={:.4}, std={:.4}", c_mean, c_std);
 
         // Start from noise (x_0 in LSD notation)
         // DEBUG: Use zeros instead of randn for deterministic comparison with Python
-        let mut current = Tensor::zeros(
-            (batch_size, seq_len, self.config.latent_dim),
-            candle_core::DType::F32,
-            device,
-        )?;
+        let mut current =
+            Tensor::zeros((batch_size, seq_len, self.config.latent_dim), candle_core::DType::F32, device)?;
         // let mut current = Tensor::randn(
         //     0f32,
         //     1f32,
@@ -366,7 +372,10 @@ impl FlowNet {
                 if step == 0 {
                     eprintln!("[FlowNet-Step0] velocity first 8: {:?}", &vel_flat[..8.min(vel_flat.len())]);
                 }
-                eprintln!("[FlowNet] step {} (s={:.3}, t={:.3}): vel mean={:.4}, max={:.4}", step, s, t, v_mean, v_max);
+                eprintln!(
+                    "[FlowNet] step {} (s={:.3}, t={:.3}): vel mean={:.4}, max={:.4}",
+                    step, s, t, v_mean, v_max
+                );
             }
 
             // LSD Euler step: current += flow_dir / num_steps
@@ -419,8 +428,14 @@ impl FlowNet {
         if s_val < 0.01 {
             let te_s_flat: Vec<f32> = time_emb_s.flatten_all()?.to_vec1()?;
             let te_t_flat: Vec<f32> = time_emb_t.flatten_all()?.to_vec1()?;
-            eprintln!("[FlowNet-Step0] time_embed_s (s=0) first 8: {:?}", &te_s_flat[..8.min(te_s_flat.len())]);
-            eprintln!("[FlowNet-Step0] time_embed_t (t=1) first 8: {:?}", &te_t_flat[..8.min(te_t_flat.len())]);
+            eprintln!(
+                "[FlowNet-Step0] time_embed_s (s=0) first 8: {:?}",
+                &te_s_flat[..8.min(te_s_flat.len())]
+            );
+            eprintln!(
+                "[FlowNet-Step0] time_embed_t (t=1) first 8: {:?}",
+                &te_t_flat[..8.min(te_t_flat.len())]
+            );
         }
 
         // AVERAGE the two time embeddings (this is critical for LSD!)
@@ -432,7 +447,10 @@ impl FlowNet {
             let te_flat: Vec<f32> = time_emb_avg.flatten_all()?.to_vec1()?;
             let te_mean = te_flat.iter().sum::<f32>() / te_flat.len() as f32;
             let te_max = te_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            eprintln!("[FlowNet] s={:.3}, t={:.3}: avg_time_emb mean={:.6}, max={:.4}", s_val, t_val, te_mean, te_max);
+            eprintln!(
+                "[FlowNet] s={:.3}, t={:.3}: avg_time_emb mean={:.6}, max={:.4}",
+                s_val, t_val, te_mean, te_max
+            );
             eprintln!("[FlowNet-Step0] avg_time_emb first 8: {:?}", &te_flat[..8.min(te_flat.len())]);
         }
 
@@ -443,7 +461,10 @@ impl FlowNet {
         // DIAGNOSTIC: Log combined conditioning at step 0
         if s_val < 0.01 {
             let cc_flat: Vec<f32> = cond_combined.flatten_all()?.to_vec1()?;
-            eprintln!("[FlowNet-Step0] cond_combined (c + time) first 8: {:?}", &cc_flat[..8.min(cc_flat.len())]);
+            eprintln!(
+                "[FlowNet-Step0] cond_combined (c + time) first 8: {:?}",
+                &cc_flat[..8.min(cc_flat.len())]
+            );
         }
 
         // Residual blocks
@@ -456,7 +477,10 @@ impl FlowNet {
                 let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
                 let h_max = h_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
                 let h_min = h_flat.iter().cloned().fold(f32::INFINITY, f32::min);
-                eprintln!("[FlowNet] after ResBlock 0: mean={:.4}, range=[{:.4}, {:.4}]", h_mean, h_min, h_max);
+                eprintln!(
+                    "[FlowNet] after ResBlock 0: mean={:.4}, range=[{:.4}, {:.4}]",
+                    h_mean, h_min, h_max
+                );
             }
         }
 
@@ -467,7 +491,10 @@ impl FlowNet {
             let v_mean = v_flat.iter().sum::<f32>() / v_flat.len() as f32;
             let v_min = v_flat.iter().cloned().fold(f32::INFINITY, f32::min);
             let v_max = v_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            eprintln!("[FlowNet] velocity after FinalLayer: mean={:.4}, range=[{:.4}, {:.4}]", v_mean, v_min, v_max);
+            eprintln!(
+                "[FlowNet] velocity after FinalLayer: mean={:.4}, range=[{:.4}, {:.4}]",
+                v_mean, v_min, v_max
+            );
         }
         Ok(velocity)
     }
