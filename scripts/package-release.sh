@@ -57,6 +57,22 @@ if [ -f "$PROJECT_DIR/swift/PocketTTSSwift.swift" ]; then
     cp "$PROJECT_DIR/swift/PocketTTSSwift.swift" "$OUTPUT_DIR/$RELEASE_NAME/Sources/"
 fi
 
+# Copy model files
+echo "Copying model files..."
+MODELS_DIR="$PROJECT_DIR/models/kyutai-pocket-ios"
+if [ -d "$MODELS_DIR" ]; then
+    mkdir -p "$OUTPUT_DIR/$RELEASE_NAME/Models"
+    cp "$MODELS_DIR/model.safetensors" "$OUTPUT_DIR/$RELEASE_NAME/Models/"
+    cp "$MODELS_DIR/tokenizer.model" "$OUTPUT_DIR/$RELEASE_NAME/Models/"
+    if [ -d "$MODELS_DIR/voices" ]; then
+        cp -r "$MODELS_DIR/voices" "$OUTPUT_DIR/$RELEASE_NAME/Models/"
+    fi
+else
+    echo "Error: Model files not found at $MODELS_DIR"
+    echo "Expected: model.safetensors, tokenizer.model, voices/"
+    exit 1
+fi
+
 # Copy documentation
 echo "Copying documentation..."
 cp "$PROJECT_DIR/LICENSE" "$OUTPUT_DIR/$RELEASE_NAME/"
@@ -80,7 +96,7 @@ Text-to-speech synthesis for iOS using the Kyutai Pocket TTS model.
 
 1. Drag `PocketTTS.xcframework` into your Xcode project
 2. Add Swift files from `Sources/` to your project
-3. Download model files (see Model Files section)
+3. Add `Models/` folder to your app bundle
 
 ## Quick Start
 
@@ -101,17 +117,17 @@ let result = try engine.synthesize(text: "Hello, world!")
 
 ## Model Files
 
-Download model files and include in your app bundle:
+Model files are included in the `Models/` folder:
 
 ```
 Models/
 ├── model.safetensors     # Main model (~225MB)
 ├── tokenizer.model       # Tokenizer (~60KB)
-└── voices/               # Voice embeddings (~4MB)
-    ├── alba.safetensors
-    ├── marius.safetensors
-    └── ...
+└── voices/               # Voice embeddings
+    └── alba.safetensors
 ```
+
+Add this folder to your Xcode project and ensure it's copied to the app bundle.
 
 ## Available Voices
 

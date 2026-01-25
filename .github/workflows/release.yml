@@ -71,6 +71,11 @@ jobs:
       - name: Build XCFramework
         run: ./scripts/build-ios.sh
 
+      - name: Download model files from HuggingFace
+        run: |
+          pip install huggingface_hub
+          python scripts/download-model.py --output-dir ./models/kyutai-pocket-ios
+
       - name: Verify build outputs
         run: |
           echo "Checking build outputs..."
@@ -158,7 +163,12 @@ jobs:
 
           - iOS 17.0+
           - Xcode 15+
-          - Model files (not included - download separately)
+
+          ## Included
+
+          - XCFramework (device + simulator)
+          - Swift bindings
+          - Model files (~226MB)
 
           ## Checksums
 
