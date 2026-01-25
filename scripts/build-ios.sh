@@ -29,12 +29,13 @@ mkdir -p "$OUTPUT_DIR"
 echo ""
 echo "Building for iOS device (aarch64-apple-ios)..."
 cd "$PROJECT_DIR"
-cargo build --release --target aarch64-apple-ios
+# Set CMAKE_GENERATOR=Xcode for sentencepiece-sys which requires Xcode-specific CMake functions
+CMAKE_GENERATOR=Xcode cargo build --release --target aarch64-apple-ios
 
 # Build for iOS simulator (arm64)
 echo ""
 echo "Building for iOS simulator (aarch64-apple-ios-sim)..."
-cargo build --release --target aarch64-apple-ios-sim
+CMAKE_GENERATOR=Xcode cargo build --release --target aarch64-apple-ios-sim
 
 # Generate Swift bindings
 echo ""
