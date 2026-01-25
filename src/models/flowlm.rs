@@ -436,15 +436,77 @@ impl FlowLM {
         let mut current_latent = self.bos_emb.clone().unsqueeze(0)?.unsqueeze(0)?; // [1, 1, 32]
 
         for step in 0..max_gen_len {
+            // DIAGNOSTIC: Capture the raw latent at early steps and around step 36
+            if step <= 5 || step == 35 || step == 36 {
+                let lat_flat: Vec<f32> = current_latent.flatten_all()?.to_vec1()?;
+                let lat_mean = lat_flat.iter().sum::<f32>() / lat_flat.len() as f32;
+                let lat_std = (lat_flat.iter().map(|x| (x - lat_mean).powi(2)).sum::<f32>() / lat_flat.len() as f32).sqrt();
+                eprintln!(
+                    "[LATENT] Rust step={}: mean={:.6}, std={:.6}, first 8: {:?}",
+                    step, lat_mean, lat_std, &lat_flat[..8.min(lat_flat.len())]
+                );
+            }
+
             // Project latent to hidden dimension
             let latent_hidden = self.input_linear.forward(&current_latent)?; // [1, 1, 1024]
 
             // Run through transformer (using KV cache)
-            let mut step_hidden = latent_hidden;
+            let mut step_hidden = latent_hidden.clone();
+
+            // DIAGNOSTIC: Capture INPUT to layer 0 at step 36
+            if step == 36 {
+                let h_flat: Vec<f32> = step_hidden.flatten_all()?.to_vec1()?;
+                let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
+                let h_std = (h_flat.iter().map(|x| (x - h_mean).powi(2)).sum::<f32>() / h_flat.len() as f32).sqrt();
+                eprintln!(
+                    "[INPUT-L0] Rust step=36: mean={:.6}, std={:.6}",
+                    h_mean, h_std
+                );
+                eprintln!(
+                    "[INPUT-L0] Rust step=36: first 8: {:?}",
+                    &h_flat[..8.min(h_flat.len())]
+                );
+            }
+
             for (i, layer) in self.layers.iter().enumerate() {
                 step_hidden = layer.forward(&step_hidden, &self.rotary, Some(&mut self.kv_caches[i]))?;
+
+                // DIAGNOSTIC: Per-layer hidden state capture at step 36 (Python step 38)
+                // This is the critical step where divergence begins
+                if step == 36 {
+                    let h_flat: Vec<f32> = step_hidden.flatten_all()?.to_vec1()?;
+                    let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
+                    let h_std = (h_flat.iter().map(|x| (x - h_mean).powi(2)).sum::<f32>() / h_flat.len() as f32).sqrt();
+                    let h_min = h_flat.iter().cloned().fold(f32::INFINITY, f32::min);
+                    let h_max = h_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                    eprintln!(
+                        "[LAYER-{}] Rust step=36: mean={:.6}, std={:.6}, min={:.6}, max={:.6}",
+                        i, h_mean, h_std, h_min, h_max
+                    );
+                    eprintln!(
+                        "[LAYER-{}] Rust step=36: first 8: {:?}",
+                        i, &h_flat[..8.min(h_flat.len())]
+                    );
+                }
             }
             let step_hidden = self.final_norm.forward(&step_hidden)?;
+
+            // DIAGNOSTIC: Final hidden state at step 36 (after out_norm)
+            if step == 36 {
+                let h_flat: Vec<f32> = step_hidden.flatten_all()?.to_vec1()?;
+                let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
+                let h_std = (h_flat.iter().map(|x| (x - h_mean).powi(2)).sum::<f32>() / h_flat.len() as f32).sqrt();
+                let h_min = h_flat.iter().cloned().fold(f32::INFINITY, f32::min);
+                let h_max = h_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                eprintln!(
+                    "[FINAL] Rust step=36: mean={:.6}, std={:.6}, min={:.6}, max={:.6}",
+                    h_mean, h_std, h_min, h_max
+                );
+                eprintln!(
+                    "[FINAL] Rust step=36: first 8: {:?}",
+                    &h_flat[..8.min(h_flat.len())]
+                );
+            }
 
             // Get the last position's hidden state
             let last_hidden = step_hidden.squeeze(1)?; // [1, 1024]
