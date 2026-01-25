@@ -440,10 +440,14 @@ impl FlowLM {
             if step <= 5 || step == 35 || step == 36 {
                 let lat_flat: Vec<f32> = current_latent.flatten_all()?.to_vec1()?;
                 let lat_mean = lat_flat.iter().sum::<f32>() / lat_flat.len() as f32;
-                let lat_std = (lat_flat.iter().map(|x| (x - lat_mean).powi(2)).sum::<f32>() / lat_flat.len() as f32).sqrt();
+                let lat_std =
+                    (lat_flat.iter().map(|x| (x - lat_mean).powi(2)).sum::<f32>() / lat_flat.len() as f32).sqrt();
                 eprintln!(
                     "[LATENT] Rust step={}: mean={:.6}, std={:.6}, first 8: {:?}",
-                    step, lat_mean, lat_std, &lat_flat[..8.min(lat_flat.len())]
+                    step,
+                    lat_mean,
+                    lat_std,
+                    &lat_flat[..8.min(lat_flat.len())]
                 );
             }
 
@@ -458,14 +462,8 @@ impl FlowLM {
                 let h_flat: Vec<f32> = step_hidden.flatten_all()?.to_vec1()?;
                 let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
                 let h_std = (h_flat.iter().map(|x| (x - h_mean).powi(2)).sum::<f32>() / h_flat.len() as f32).sqrt();
-                eprintln!(
-                    "[INPUT-L0] Rust step=36: mean={:.6}, std={:.6}",
-                    h_mean, h_std
-                );
-                eprintln!(
-                    "[INPUT-L0] Rust step=36: first 8: {:?}",
-                    &h_flat[..8.min(h_flat.len())]
-                );
+                eprintln!("[INPUT-L0] Rust step=36: mean={:.6}, std={:.6}", h_mean, h_std);
+                eprintln!("[INPUT-L0] Rust step=36: first 8: {:?}", &h_flat[..8.min(h_flat.len())]);
             }
 
             for (i, layer) in self.layers.iter().enumerate() {
@@ -483,10 +481,7 @@ impl FlowLM {
                         "[LAYER-{}] Rust step=36: mean={:.6}, std={:.6}, min={:.6}, max={:.6}",
                         i, h_mean, h_std, h_min, h_max
                     );
-                    eprintln!(
-                        "[LAYER-{}] Rust step=36: first 8: {:?}",
-                        i, &h_flat[..8.min(h_flat.len())]
-                    );
+                    eprintln!("[LAYER-{}] Rust step=36: first 8: {:?}", i, &h_flat[..8.min(h_flat.len())]);
                 }
             }
             let step_hidden = self.final_norm.forward(&step_hidden)?;
@@ -502,10 +497,7 @@ impl FlowLM {
                     "[FINAL] Rust step=36: mean={:.6}, std={:.6}, min={:.6}, max={:.6}",
                     h_mean, h_std, h_min, h_max
                 );
-                eprintln!(
-                    "[FINAL] Rust step=36: first 8: {:?}",
-                    &h_flat[..8.min(h_flat.len())]
-                );
+                eprintln!("[FINAL] Rust step=36: first 8: {:?}", &h_flat[..8.min(h_flat.len())]);
             }
 
             // Get the last position's hidden state

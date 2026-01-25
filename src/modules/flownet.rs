@@ -337,12 +337,7 @@ impl FlowNet {
         // Python uses: std = temp^0.5, and samples from Normal(0, std)
         // Python default temperature = 0.7, so std ≈ 0.8367
         let std = temperature.sqrt();
-        let mut current = Tensor::randn(
-            0f32,
-            std,
-            (batch_size, seq_len, self.config.latent_dim),
-            device,
-        )?;
+        let mut current = Tensor::randn(0f32, std, (batch_size, seq_len, self.config.latent_dim), device)?;
 
         // LSD decoding: integrate from s=0 toward t=1
         // For i in 0..num_steps:
