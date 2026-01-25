@@ -1,11 +1,11 @@
 [package]
 name = "pocket-tts-ios"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["UnaMentis (iOS integration)", "babybirdprd (original Rust/Candle port)"]
 description = "Kyutai Pocket TTS for iOS via Candle"
 license = "MIT"
-repository = "https://github.com/babybirdprd/pocket-tts"
+repository = "https://github.com/UnaMentis/pocket-tts-ios"
 
 [lib]
 name = "pocket_tts_ios"

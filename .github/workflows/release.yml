@@ -1,0 +1,183 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'  # Pre-release tags like v0.4.0-beta
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.4.0)'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            TAG="v$VERSION"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG#v}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Release version: $VERSION (tag: $TAG)"
+
+      - name: Verify Cargo.toml version matches
+        run: |
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          EXPECTED="${{ steps.version.outputs.version }}"
+          # Strip any pre-release suffix for comparison
+          EXPECTED_BASE=$(echo "$EXPECTED" | sed 's/-.*//')
+          if [ "$CARGO_VERSION" != "$EXPECTED_BASE" ]; then
+            echo "Error: Tag version ($EXPECTED_BASE) doesn't match Cargo.toml ($CARGO_VERSION)"
+            exit 1
+          fi
+          echo "Version verified: $CARGO_VERSION"
+
+  build:
+    name: Build XCFramework
+    needs: validate
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: aarch64-apple-ios, aarch64-apple-ios-sim
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ios-release
+
+      - name: Build XCFramework
+        run: ./scripts/build-ios.sh
+
+      - name: Verify build outputs
+        run: |
+          echo "Checking build outputs..."
+          ls -la target/xcframework/
+
+          if [ -d "target/xcframework/PocketTTS.xcframework" ]; then
+            echo "XCFramework created successfully"
+            du -sh target/xcframework/PocketTTS.xcframework
+          else
+            echo "XCFramework not found"
+            exit 1
+          fi
+
+          if [ -f "target/xcframework/pocket_tts_ios.swift" ]; then
+            echo "Swift bindings generated"
+          else
+            echo "Swift bindings not found"
+            exit 1
+          fi
+
+      - name: Package release
+        run: |
+          chmod +x scripts/package-release.sh
+          ./scripts/package-release.sh "${{ needs.validate.outputs.version }}"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-package
+          path: |
+            release/PocketTTS-v${{ needs.validate.outputs.version }}.zip
+            release/PocketTTS-v${{ needs.validate.outputs.version }}.zip.sha256
+          retention-days: 7
+
+  release:
+    name: Create GitHub Release
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-package
+          path: release
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          TAG="${{ needs.validate.outputs.tag }}"
+
+          # Create release notes file
+          cat > release_notes.md << 'HEADER'
+          ## Pocket TTS iOS Beta Release
+
+          This is a beta release of the Pocket TTS iOS XCFramework for text-to-speech synthesis.
+
+          HEADER
+
+          # Extract changelog section for this version
+          if grep -q "## \[$VERSION\]" CHANGELOG.md; then
+            echo "### Changes" >> release_notes.md
+            echo "" >> release_notes.md
+            sed -n "/## \[$VERSION\]/,/## \[/p" CHANGELOG.md | head -n -1 | tail -n +2 >> release_notes.md
+          fi
+
+          # Add installation instructions
+          cat >> release_notes.md << 'INSTALL'
+
+          ## Installation
+
+          1. Download `PocketTTS-vX.Y.Z.zip` from the assets below
+          2. Extract the archive
+          3. Add `PocketTTS.xcframework` to your Xcode project
+          4. Add Swift files from `Sources/` directory to your project
+          5. See included README.md for detailed integration instructions
+
+          ## Requirements
+
+          - iOS 17.0+
+          - Xcode 15+
+          - Model files (not included - download separately)
+
+          ## Checksums
+
+          ```
+          INSTALL
+
+          cat release/PocketTTS-v$VERSION.zip.sha256 >> release_notes.md
+          echo '```' >> release_notes.md
+
+          cat release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.validate.outputs.tag }}
+          name: Pocket TTS iOS ${{ needs.validate.outputs.tag }}
+          body_path: release_notes.md
+          files: |
+            release/PocketTTS-v${{ needs.validate.outputs.version }}.zip
+            release/PocketTTS-v${{ needs.validate.outputs.version }}.zip.sha256
+          draft: false
+          prerelease: ${{ contains(needs.validate.outputs.version, '-') }}
