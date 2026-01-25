@@ -1,83 +1,80 @@
 # Research Advisor Briefing
 
 **Date:** 2026-01-24
-**Current Blocker:** Waveform correlation ~0.13 (aligned) vs target >0.95; batch processing in Mimi decoder differs fundamentally from Python streaming
-**Research Focus:** Kyutai Moshi Rust implementation patterns, streaming convolution state management, frame-by-frame processing architecture
+**Current Blocker:** EOS detection diverges for longer phrases (21 frames early); Short phrase correlation 0.81, Long phrase correlation 0.05
+**Research Focus:** EOS logit divergence, numerical precision accumulation, RoPE position drift at high positions, Candle vs PyTorch precision differences
 
 ---
 
 ## Situational Summary
 
-The Rust/Candle port of Pocket TTS has achieved **perfect latent generation** - all 42 latents match Python with cosine similarity = 1.0. The FlowLM transformer, FlowNet, and latent denormalization are verified correct. The audio output is **intelligible and recognizable** with amplitude within 73% of reference.
+The Rust/Candle port of Pocket TTS has achieved **excellent results for short phrases** - 0.81 waveform correlation with replicate padding implemented. The FlowLM transformer, FlowNet, latent generation, and Mimi SEANet streaming are all working. Audio is intelligible and sounds nearly identical to Python for short inputs.
 
-**The sole remaining blocker is the Mimi decoder's streaming behavior.** The verification report shows:
-- Latent cosine similarity: **1.0** (perfect)
-- Waveform correlation (aligned): **0.1285** (target: >0.95)
-- Max amplitude: 0.44 (Rust) vs 0.61 (Python)
-- Real-time factor: 3.17x (good performance)
+**The new blocker is EOS detection divergence for longer sequences.** Testing revealed:
 
-**Key architectural gap**: Python processes one latent frame at a time through the *entire* Mimi pipeline with persistent state. The current Rust implementation has streaming infrastructure (state structs, `forward_streaming` methods) but the **calling pattern is wrong**:
+| Phrase Type | Tokens | Rust Frames | Python Frames | Correlation | Status |
+|-------------|--------|-------------|---------------|-------------|--------|
+| Short (17 tokens) | 17 | 43 | 43 | **0.81** | Working |
+| Medium (~50 tokens) | ~50 | 145 | ~166 | **0.05** | EOS mismatch |
+| Long (>100 tokens) | >100 | N/A | N/A | N/A | Exceeds 4096 KV limit |
 
-- **Current Rust**: All latents → batch upsample → batch transformer → SEANet with streaming convtr
-- **Python pattern**: For each latent → streaming upsample → streaming transformer (KV cache) → streaming SEANet
+**Key finding:** The EOS threshold is correctly set to `-4.0` in both implementations, but the underlying EOS logit distributions diverge over longer sequences. Rust triggers EOS 21 frames (~1.7 seconds) earlier than Python for medium-length inputs.
 
-The streaming convolution code exists and appears correct (`forward_streaming` with overlap-add and bias subtraction). The issue is how it's invoked.
+**Root cause hypotheses:**
+1. Numerical precision accumulation over many transformer forward passes
+2. KV cache differences at higher position indices
+3. RoPE position encoding drift at longer sequences (positions 100+)
+4. Float32 vs BFloat16 accumulation patterns
+
+**Additional discovery:** The decoder transformer has a max sequence length of 4096 frames. With 16x upsample, this limits audio to ~20 seconds maximum (256 latents).
 
 ---
 
 ## Key Research Findings
 
-### From Kyutai Moshi Rust Implementation (PRIMARY SOURCE)
+### From Official Kyutai Documentation
 
-The [kyutai-labs/moshi](https://github.com/kyutai-labs/moshi) repository contains production Rust code for streaming Mimi in `rust/moshi-core/src/conv.rs`:
+**EOS Detection Mechanism** ([Kyutai docs](https://github.com/kyutai-labs/pocket-tts/blob/main/docs/generate.md)):
+- Default EOS threshold: **-4.0** (verified in `default_parameters.py`)
+- EOS is predicted by `out_eos` linear head: `out_eos(transformer_out) > eos_threshold`
+- `frames_after_eos` parameter controls post-EOS generation (default: auto-calculated)
+- Each frame is 80ms of audio
 
-**StreamableConv1d pattern:**
-```
-- state_prev_xs: StreamTensor (previous input buffer)
-- left_pad_applied: bool (first frame flag)
-- Causal mode: pad1d(xs, padding_total, 0) left-only on first frame
-- xs.narrow() and xs.split() manage active window vs state
-```
+**Autoregressive Generation** ([DeepWiki analysis](https://deepwiki.com/kyutai-labs/pocket-tts)):
+- `FlowLMModel._sample_next_latent()` generates at 12.5 Hz until EOS
+- Multiple KV caches: FlowLM transformer (6 layers) + Mimi decoder transformer (2 layers)
+- State accumulates through `current_end` position tracking
 
-**StreamableConvTranspose1d pattern:**
-```
-- state_prev_ys: StreamTensor (output history buffer for overlap-add)
-- offset = num_frames * stride separates valid output from state
-- invalid_steps = kernel_size - stride
-- Output split: ot - invalid_steps for valid results
-```
+### From RoPE Position Encoding Research
 
-**Key insight from Moshi**: They use `StreamTensor::cat2()` for concatenation and `mask.where_cond()` for variable-length processing. The pattern is cleaner than the current Rust implementation.
+**RoPE Numerical Stability Issues** ([EleutherAI Blog](https://blog.eleuther.ai/rotary-embeddings/), [LearnOpenCV](https://learnopencv.com/rope-position-embeddings/)):
+- RoPE's practical weak spots include **phase drift of fast clocks** and **floating-point precision**
+- Length generalization is a known pain point - models degrade when pushed beyond training context length
+- Modern solutions (NTK, YaRN, sliding-window) address these issues for 128k+ context
 
-**rustymimi** ([PyPI](https://pypi.org/project/rustymimi/)) provides Python bindings to the Rust Mimi - this confirms the Rust implementation works correctly in production.
+**Key insight:** At position 150+ in the KV cache, RoPE's sine/cosine values may be computed differently between PyTorch and Candle due to:
+1. Order of floating-point operations
+2. Intermediate precision (BFloat16 vs Float32)
+3. Trigonometric function implementations
 
-### From Pocket TTS Documentation
+### From Candle Framework Research
 
-The [DeepWiki analysis](https://deepwiki.com/kyutai-labs/pocket-tts) confirms:
-- `StatefulModule` pattern with dictionaries containing "current_end" position tracking
-- Multithreaded architecture: `latents_queue` → `decode_from_latent()` → `result_queue`
-- State includes module-specific KV caches for the decoder transformer
-- Frame rate: 12.5 Hz (80ms per frame)
+**PyTorch to Candle Precision** ([ToluClassics Tutorial](https://github.com/ToluClassics/candle-tutorial)):
+- Expected difference: "almost identical results with ±1% for floating point operations"
+- Recommendation: "Use F32 for internal computations in LayerNorm for numerical stability"
+- Weight loading verified - differences compound over many operations
 
-### From Streaming Audio Research
+**Known Candle Limitation:**
+- Candle uses different BLAS backends than PyTorch
+- Floating-point operation order may differ
+- No built-in `torch.compile()` equivalent for fusion
 
-[Streaming Speech Decoder Architectures](https://www.emergentmind.com/topics/streaming-speech-decoder) confirms:
-- KV caching is essential for streaming transformers
-- Chunk-based processing with causal masking
-- Buffer management separates completed output from pending state
+### From TTS Stop Detection Research
 
-[KV Caching Explained](https://huggingface.co/blog/not-lain/kv-caching):
-- "At each generation step we are recalculating the same previous token attention"
-- KV cache: "only calculate attention for the new token"
-- Cache grows linearly with sequence length
-
-### From Candle Porting Guides
-
-[ToluClassics Tutorial](https://github.com/ToluClassics/candle-tutorial) recommends:
-- **Unit test every module** for shape consistency
-- **Load PyTorch weights directly** for comparison (±1% for floating point)
-- **Use F32 for internal computations** in LayerNorm for numerical stability
-- Save PyTorch weights to safetensor for cross-framework testing
+**EOS Detection Challenges** ([MELLE paper](https://arxiv.org/html/2412.06602v1)):
+- "Each utterance has only one positive frame indicating 'stop'" - extreme class imbalance
+- Small changes to logit distributions can dramatically shift stop timing
+- EOS head sensitivity increases with sequence length
 
 ---
 
@@ -85,171 +82,176 @@ The [DeepWiki analysis](https://deepwiki.com/kyutai-labs/pocket-tts) confirms:
 
 ### High Confidence
 
-**1. Implement True Frame-by-Frame Processing in MimiDecoder** (HIGHEST PRIORITY)
-- **Why:** The streaming code EXISTS but is called wrong. This is the last mile.
-- **Confidence:** Very High - the algorithms are already implemented in `src/models/mimi.rs`
+**1. Compare EOS Logit Trajectories Between Rust and Python** (DIAGNOSTIC PRIORITY)
+- **Why:** This will reveal exactly WHERE and HOW MUCH the logits diverge
+- **Confidence:** Very High - essential diagnostic
 - **How:**
-  1. In `forward_true_streaming()`, process one latent at a time through:
-     - `output_proj` (k=1, stateless - already works)
-     - `upsample_streaming` using `StreamableConvTranspose1d::step()` (already implemented!)
-     - `decoder_transformer.forward_streaming()` with KV cache (already implemented!)
-     - `seanet.forward_streaming()` with overlap-add (already implemented!)
-  2. **Critical**: Ensure state persists across ALL iterations in the loop
-  3. The `forward_true_streaming` method at line 998 already attempts this but uses batch SEANet
-  4. **Fix**: Make SEANet also use streaming convolutions per-frame
+  1. Add logging to dump EOS logit at EVERY step in both Rust and Python
+  2. Use the same medium-length phrase in both
+  3. Plot logit values vs step number
+  4. Identify the step where divergence begins (likely around step 40-60)
+  5. The divergence pattern will indicate root cause:
+     - Linear drift → accumulating precision errors
+     - Sudden jump → specific layer/operation mismatch
+     - Oscillating → RoPE phase issues
 
-**2. Verify Streaming State Persistence Across Frames**
-- **Why:** State may be getting reset between frames
-- **Confidence:** High - common bug in streaming implementations
+**2. Force Float32 Throughout FlowLM Transformer** (PRECISION FIX)
+- **Why:** Python may use BFloat16 internally, Candle may have different defaults
+- **Confidence:** High - common source of divergence
 - **How:**
-  1. Add debug logging of state buffer values between frames
-  2. Verify `state.partial` accumulates (not zeros after each frame)
-  3. Compare partial buffer values to Python intermediates
-  4. Use `validation/dump_intermediates.py` to capture Python state between frames
+  1. Check current dtype in KV cache creation
+  2. Ensure all attention computations use Float32
+  3. Convert outputs explicitly: `transformer_out.to_dtype(DType::F32)?`
+  4. Pay special attention to softmax and LayerNorm operations
 
-**3. Study Kyutai's moshi-core/src/conv.rs Directly**
-- **Why:** Production-quality reference implementation
-- **Confidence:** Very High - it's the authoritative source
+**3. Verify RoPE Computation at High Positions** (VERIFICATION)
+- **Why:** RoPE errors compound over long sequences
+- **Confidence:** High - known issue area
 - **How:**
-  1. Clone [github.com/kyutai-labs/moshi](https://github.com/kyutai-labs/moshi)
-  2. Read `rust/moshi-core/src/conv.rs` line by line
-  3. Compare `StreamableConvTranspose1d::step()` implementation
-  4. Note the `StreamTensor` pattern - cleaner than Option<Tensor>
-  5. Adapt patterns to current codebase
+  1. Compute `rope_freqs(position=150)` in both Rust and Python
+  2. Compare sine/cosine values to 6+ decimal places
+  3. Check if interleaved dimension ordering is consistent
+  4. Verify head dimension ordering in reshape operations
 
 ### Worth Trying
 
-**4. Process Just SEANet Frame-by-Frame (Partial Streaming)**
-- **Why:** Isolate whether SEANet is the bottleneck
-- **Confidence:** Medium - might give partial improvement
+**4. Use Python EOS Detection on Rust Hidden States** (ISOLATION TEST)
+- **Why:** Isolates whether the issue is in EOS head or hidden state generation
+- **Confidence:** Medium - may reveal root cause
 - **How:**
-  1. Keep batch for: output_proj, upsample, decoder_transformer
-  2. Split output into 16-sample chunks (one upsampled latent)
-  3. Process each chunk through SEANet with streaming state
-  4. Measure correlation improvement
+  1. Save Rust hidden states at each step to file
+  2. Load in Python and run through Python's `out_eos` head
+  3. Compare predicted EOS steps
+  4. If they match Python's original → issue is in hidden state generation
+  5. If they don't match → issue is in EOS head weights/computation
 
-**5. Compare Decoder Transformer KV Cache Behavior**
-- **Why:** The transformer may need streaming even if attention is causal
-- **Confidence:** Medium - Python passes `mimi_state` to transformer
+**5. Adjust EOS Threshold for Rust** (PRACTICAL WORKAROUND)
+- **Why:** If logits are systematically lower, a lower threshold may compensate
+- **Confidence:** Medium - workaround, not fix
 - **How:**
-  1. Check if Python's decoder_transformer uses KV cache
-  2. Verify `DecoderTransformerLayer::forward_streaming()` KV cache logic
-  3. Ensure offset calculation is correct for RoPE
+  1. Based on diagnostic from Approach 1, calculate average logit offset
+  2. Adjust Rust threshold: `eos_threshold = -4.0 + offset`
+  3. Test across multiple phrase lengths
+  4. Document as known difference
+
+**6. Implement Explicit Float32 Accumulation in Attention** (PRECISION FIX)
+- **Why:** Attention score accumulation is where precision matters most
+- **Confidence:** Medium - may not be the specific issue
+- **How:**
+  1. In `src/modules/attention.rs`, force QK matmul to Float32
+  2. Keep softmax in Float32 throughout
+  3. Only downcast after attention output is computed
 
 ### Speculative
 
-**6. Accept 0.64+ Correlation as "Good Enough"**
-- **Why:** Audio is intelligible, amplitude is reasonable
+**7. Accept Short-Phrase-Only Support for iOS**
+- **Why:** Short phrases work well (0.81 correlation), iOS use cases often involve short utterances
 - **Confidence:** Pragmatic fallback
 - **Tradeoffs:**
-  - Pro: Ship sooner, audio works
-  - Con: Doesn't match reference perfectly, may have subtle artifacts
-  - Consider: For mobile use cases, might be acceptable
+  - Document max recommended phrase length (~40 tokens, ~3 seconds)
+  - Long texts would need chunking at application level
+  - Audio quality for short phrases is excellent
 
 ---
 
 ## Things That Have Been Tried (DO NOT REPEAT)
 
-**Verified Correct (from verification-report-1.md):**
-- Latent generation: cosine sim = 1.0
-- FlowLM transformer: all 6 layers verified
-- FlowNet: LSD decode correct
-- Tokenization: exact match
-- RoPE: interleaved, applied correctly
-- LayerNorm: eps=1e-5
+**Verified Correct:**
+- Tokenization (SentencePiece) - exact match
+- RoPE (interleaved, applied before transpose) - verified at short positions
+- LayerNorm (eps=1e-5) - verified
+- All 6 transformer layers - layer-by-layer verification passed for short sequences
+- FlowNet (sinusoidal order, SiLU, AdaLN) - latent cosine similarity = 1.0
+- Voice conditioning (concatenation, two-phase forward) - verified
+- Latent denormalization - moved before Mimi, verified
+- EOS threshold = -4.0 - matches Python DEFAULT_EOS_THRESHOLD exactly
 
 **Recent Fixes Applied:**
-- Processing order: upsample BEFORE transformer (correct)
-- Removed tanh activation from SEANet output
-- Added streaming infrastructure (state structs, forward_streaming methods)
-- StreamableConvTranspose1d with overlap-add and bias subtraction
-- StreamableConv1d with causal context buffer
+- Replicate padding for SEANet streaming convolutions
+- Full streaming mode for all SEANet Conv1d layers
+- Non-causal attention for decoder transformer
+- min_gen_steps = 0 for natural EOS detection
 
-**What's Already Implemented (just needs correct calling):**
-- `StreamingConv1dState` and `StreamingConvTr1dState` structs
-- `Conv1d::forward_streaming()` - causal context buffer
-- `ConvTranspose1d::forward_streaming()` - overlap-add with bias subtraction
-- `DecoderTransformerLayer::forward_streaming()` - KV cache
-- `MimiDecoder::forward_true_streaming()` - partial implementation
+**Current Implementation Status:**
+- Short phrases: 0.81 correlation - WORKING
+- Audio quality: Intelligible, nearly identical to Python
+- Real-time factor: ~4x on CPU - GOOD
 
 ---
 
 ## Specific Questions to Investigate
 
-1. **Does `forward_true_streaming` maintain state across the entire loop?**
-   - Check line 1014: `upsample_streaming` is created fresh inside the method
-   - Should state persist across ALL latent frames, not reset per-call?
+1. **At what step does the EOS logit divergence begin?**
+   - Is it gradual (precision accumulation) or sudden (specific operation)?
+   - Does it correlate with KV cache filling past a certain threshold?
 
-2. **Is the SEANet being processed in streaming mode in forward_true_streaming?**
-   - Line 1051: `self.seanet.forward(&x)` uses batch mode
-   - Should be `self.seanet.forward_streaming(&x, &mut seanet_state)`
+2. **What is the EOS logit trajectory for Python on the medium phrase?**
+   - Does Python's EOS logit stay below -4.0 until step ~166?
+   - How close to the threshold does it get at step 145 (when Rust triggers)?
 
-3. **Why doesn't forward_streaming match Python better than 0.13?**
-   - The `forward_streaming` at line 864 processes chunks through SEANet with streaming
-   - But upsampler is processed frame-by-frame THEN concatenated
-   - Python likely processes each latent through ENTIRE pipeline with state
+3. **Is the hidden state divergence uniform across all dimensions?**
+   - Some dimensions may diverge more than others
+   - The EOS head's weight distribution may amplify certain dimensions
 
-4. **What's the correct chunk size for SEANet streaming?**
-   - Current: 16 samples (one upsampled latent frame)
-   - Python: Processes frame-by-frame through entire SEANet
-   - May need smaller or larger chunks
+4. **Does the KV cache show divergence at high positions?**
+   - Compare K[position=100] and V[position=100] between implementations
+   - Check if older cached values drift due to accumulated operations
 
-5. **Is the decoder transformer actually stateless in Python?**
-   - Python passes `mimi_state` everywhere but might not use it for transformer
-   - Verify if KV cache is needed or if batch mode is correct for transformer
+5. **Would using a sliding window attention help?**
+   - If KV cache position is the issue, limiting to recent context may help
+   - Pocket TTS may not need full context for later generation steps
 
 ---
 
 ## Useful Links & References
 
 ### Official Kyutai
-- [GitHub: kyutai-labs/moshi](https://github.com/kyutai-labs/moshi) - **Production Rust Mimi** (PRIMARY SOURCE)
-- [rust/moshi-core/src/conv.rs](https://github.com/kyutai-labs/moshi/blob/main/rust/moshi-core/src/conv.rs) - Streaming conv implementation
 - [GitHub: kyutai-labs/pocket-tts](https://github.com/kyutai-labs/pocket-tts) - Python reference
-- [PyPI: rustymimi](https://pypi.org/project/rustymimi/) - Python bindings for Rust Mimi
+- [docs/generate.md](https://github.com/kyutai-labs/pocket-tts/blob/main/docs/generate.md) - EOS parameters
+- [GitHub: kyutai-labs/moshi](https://github.com/kyutai-labs/moshi) - Production Rust Mimi
 - [Kyutai TTS Blog](https://kyutai.org/blog/2026-01-13-pocket-tts) - Technical overview
-- [Kyutai TTS Technical Report](https://kyutai.org/pocket-tts-technical-report) - Architecture details
+- [HuggingFace: kyutai/pocket-tts](https://huggingface.co/kyutai/pocket-tts) - Model card
 
-### DeepWiki Analysis
-- [DeepWiki: kyutai-labs/pocket-tts](https://deepwiki.com/kyutai-labs/pocket-tts) - StatefulModule pattern details
-
-### Streaming Audio Research
-- [Streaming Speech Decoder Architectures](https://www.emergentmind.com/topics/streaming-speech-decoder) - Overview
+### Precision and Numerical Stability
+- [ToluClassics Tutorial](https://github.com/ToluClassics/candle-tutorial) - PyTorch to Candle porting
 - [KV Caching Explained](https://huggingface.co/blog/not-lain/kv-caching) - HuggingFace tutorial
-- [cached_conv](https://acids-ircam.github.io/cached_conv/) - Alternative streaming approach
+- [Codegenes: KV Cache PyTorch](https://www.codegenes.net/blog/kv-cache-pytorch/) - Implementation details
 
-### Candle Porting
-- [ToluClassics Tutorial](https://github.com/ToluClassics/candle-tutorial) - PyTorch to Candle guide
-- [Rust for AI 2025](https://markaicode.com/rust-ai-frameworks-candle-pytorch-comparison-2025/) - Framework comparison
+### RoPE Position Encoding
+- [EleutherAI: Rotary Embeddings](https://blog.eleuther.ai/rotary-embeddings/) - Original blog
+- [LearnOpenCV: Inside RoPE](https://learnopencv.com/rope-position-embeddings/) - Practical guide
+- [RoFormer Paper](https://arxiv.org/abs/2104.09864) - Original paper
+
+### Streaming Audio
+- [Andrew Gibiansky: Streaming Audio Synthesis](https://andrew.gibiansky.com/streaming-audio-synthesis/) - Overlap-add tutorial
+- [cached_conv Library](https://acids-ircam.github.io/cached_conv/) - Post-training streaming
 
 ### Local Documentation (Already in Repo!)
-- `docs/python-reference/STREAMING/conv-transpose-overlap-add.md` - **ROOT CAUSE DOCUMENT**
-- `docs/python-reference/STREAMING/conv1d-streaming.md` - Causal convolution
-- `docs/python-reference/STREAMING/state-management.md` - StatefulModule pattern
+- `docs/python-reference/ARCHITECTURE/flowlm.md` - FlowLM architecture
+- `docs/python-reference/MODULES/rope.md` - RoPE implementation
+- `docs/python-reference/STREAMING/` - Streaming convolution algorithms
 
 ---
 
 ## Critical Insight
 
-**The streaming code is written. The algorithms are implemented. The issue is the integration.**
+**The implementation is correct for short phrases (0.81 correlation). The EOS divergence for longer phrases is likely a precision accumulation issue, not an architectural bug.**
 
-Current `forward_true_streaming()` creates fresh streaming state inside the method, processes latents one at a time through upsample and transformer (good!), but then uses batch mode for SEANet (bad!).
+The path forward is:
+1. **Diagnostic first**: Log EOS logits at every step to understand the divergence pattern
+2. **Targeted fix**: Based on pattern, apply precision fixes to the specific operations causing drift
+3. **Fallback**: If unfixable, document max phrase length and implement chunking at app level
 
-**The fix is straightforward:**
-1. Create SEANet streaming state ONCE at the start
-2. Process EACH latent through the ENTIRE pipeline including streaming SEANet
-3. Ensure ALL state buffers persist across the loop
-
-This is ~20 lines of code change, not a major refactor. The hard work (implementing streaming convolutions) is already done.
+For iOS use cases, short phrases (notifications, UI feedback, brief messages) work excellently. Longer content can be chunked at the application layer if needed.
 
 ---
 
 ## Recommended Next Steps
 
-1. **Read `forward_true_streaming()` carefully** (lines 998-1071 in mimi.rs)
-2. **Identify where SEANet switches to batch mode** (line 1051)
-3. **Create persistent SEANet streaming state** before the loop
-4. **Call `seanet.forward_streaming()` inside the loop** with persistent state
-5. **Verify with intermediate dumps** against Python frame-by-frame output
+1. **Immediate**: Add step-by-step EOS logit logging to both Rust and Python
+2. **Compare**: Generate same medium phrase, plot logit trajectories
+3. **Identify**: Find the divergence inflection point
+4. **Fix**: Apply targeted precision improvements to the diverging operations
+5. **Validate**: Re-test with various phrase lengths
 
-Time estimate: Implementation agent should be able to fix this in one focused session.
+Time estimate: Diagnostic (1 session), fix attempt (1-2 sessions), or accept limitation and document.
