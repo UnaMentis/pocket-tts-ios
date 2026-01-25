@@ -46,8 +46,11 @@ export CMAKE_TOOLCHAIN_FILE="$PROJECT_DIR/cmake/ios-simulator.toolchain.cmake"
 cargo build --release --target aarch64-apple-ios-sim
 
 # Generate Swift bindings
+# Unset iOS CMake variables so uniffi-bindgen builds for the host
 echo ""
 echo "Generating Swift bindings..."
+unset CMAKE_GENERATOR
+unset CMAKE_TOOLCHAIN_FILE
 cargo run --bin uniffi-bindgen generate \
     src/pocket_tts.udl \
     --language swift \

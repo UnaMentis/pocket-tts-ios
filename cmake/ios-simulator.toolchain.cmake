@@ -20,6 +20,12 @@ set(CMAKE_SYSTEM_NAME iOS)
 set(CMAKE_OSX_SYSROOT iphonesimulator)
 set(CMAKE_OSX_ARCHITECTURES arm64)
 
+# Force arm64 only - prevent Xcode from adding x86_64
+set(CMAKE_XCODE_ATTRIBUTE_ARCHS "arm64")
+set(CMAKE_XCODE_ATTRIBUTE_VALID_ARCHS "arm64")
+set(CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH "YES")
+set(CMAKE_XCODE_ATTRIBUTE_EXCLUDED_ARCHS "x86_64 i386")
+
 # Disable code signing for library builds
 # This is needed because cmake-rs builds static libraries, not apps
 set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED NO)
