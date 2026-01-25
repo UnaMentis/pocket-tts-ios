@@ -2,11 +2,11 @@
 
 **Date:** 2026-01-24
 **Branch:** main
-**Uncommitted files:** 7 (5 modified, 2 untracked)
+**Uncommitted files:** 0 (working tree clean)
 
 ## Summary
 
-The codebase contains extensive debug instrumentation from active porting/debugging work. There are 70+ `eprintln!` debug statements throughout production code, some using static atomic counters that leak global state. This is expected for active development but should be cleaned up before any release.
+The working tree is now clean - all previously flagged changes have been committed. However, the committed codebase still contains significant debug instrumentation (131+ `eprintln!` statements, 4 static atomic counters) and 89 tracked binary files (`.wav`, `.npy`, `.f32`) that should be in `.gitignore`. This is acceptable for active porting work but will need cleanup before release.
 
 ---
 
@@ -14,122 +14,135 @@ The codebase contains extensive debug instrumentation from active porting/debugg
 
 ### 1. Debug Statements in Production Code
 
-Extensive `eprintln!` debug statements that should be removed or converted to proper logging before release:
+Extensive `eprintln!` debug statements (131 total) that should be removed or feature-gated before release:
 
 | File | Count | Notes |
 |------|-------|-------|
-| [src/modules/attention.rs](../../src/modules/attention.rs) | 15 | Lines 240-344. Uses static `DEBUG_ATTN` counter |
-| [src/models/flowlm.rs](../../src/models/flowlm.rs) | 22 | Lines 116-477. Uses static `DEBUG_COUNTER` |
-| [src/modules/flownet.rs](../../src/modules/flownet.rs) | 11 | Lines 52-445. Time embedding and FlowNet diagnostics |
-| [src/models/pocket_tts.rs](../../src/models/pocket_tts.rs) | 15 | Lines 98-296. Synthesis pipeline logging |
-| [src/models/mimi.rs](../../src/models/mimi.rs) | 4 | Lines 416-454. Decoder diagnostics |
-| [src/modules/embeddings.rs](../../src/modules/embeddings.rs) | 2 | Lines 32-33. Text embedding stats |
+| `src/models/flowlm.rs` | 38 | Uses static `DEBUG_COUNTER` |
+| `src/modules/attention.rs` | 25 | Uses static `DEBUG_ATTN` |
+| `src/modules/flownet.rs` | 19 | Uses static `DIAG_COUNT` and `FLOWNET_STEP` |
+| `src/models/pocket_tts.rs` | 15 | Synthesis pipeline logging |
+| `src/models/mimi.rs` | 12 | Decoder diagnostics |
+| `src/modules/embeddings.rs` | 2 | Text embedding stats |
+| `src/bin/test_tts.rs` | 20 | (Acceptable - test/CLI tool) |
+
+Additionally, 241 `println!` statements exist (130 in `test_tts.rs` which is acceptable).
 
 ### 2. Static Atomic Counters (Global State Leakage)
 
-These will cause issues in a production library - counters never reset between calls:
+Four static counters will cause issues in a production library - they never reset between calls:
 
 ```rust
-// src/modules/attention.rs:236
-static DEBUG_ATTN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+// src/modules/attention.rs:230
+static DEBUG_ATTN: AtomicUsize
 
-// src/models/flowlm.rs:109
-static DEBUG_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+// src/modules/flownet.rs:232
+static DIAG_COUNT: AtomicUsize
+
+// src/modules/flownet.rs:386
+static FLOWNET_STEP: AtomicUsize
+
+// src/models/flowlm.rs:94
+static DEBUG_COUNTER: AtomicUsize
 ```
 
-### 3. Config Change Needs Verification
+### 3. Tracked Binary Files (89 files)
 
-[src/models/flowlm.rs:47](../../src/models/flowlm.rs#L47) - Changed `rms_norm_eps` from `1e-6` to `1e-5`:
-```rust
-rms_norm_eps: 1e-5,  // Match Python nn.LayerNorm default
-```
-This is documented in PORTING_STATUS.md but should be verified as intentional before committing.
+Binary debug/test outputs are committed to git that should be in `.gitignore`:
+
+- `test_output.wav` (root)
+- `validation/debug_outputs/*.npy` (9 files)
+- `validation/denormalized_latents.npy` and `.f32`
+- `validation/mimi_debug/*.npy` (20+ files)
+- `validation/rust_outputs/*.wav` and `*.npy`
+- `validation/reference_outputs/*.wav` and `*.npy`
 
 ---
 
 ## Medium Priority
 
-### 1. Untracked Debug Script
+### 1. Incomplete .gitignore
 
-[validation/dump_attention.py](../../validation/dump_attention.py) (93 lines) - Python script for comparing attention values with Rust. Contains hardcoded path:
-```python
-sys.path.insert(0, "/Users/ramerman/dev/unamentis/models/kyutai-pocket-ios")
-model_dir = "/Users/ramerman/dev/unamentis/models/kyutai-pocket-ios"
-```
-**Decision needed:** Add to .gitignore, delete, or commit with relative paths?
+Current `.gitignore` is missing patterns for validation outputs:
 
-### 2. Session Notes in PORTING_STATUS.md
-
-70 lines of session-specific debugging notes added. While useful for development, consider whether these belong in version control or should be moved to a separate doc.
-
-### 3. Compiler Warnings
-
-```
-warning: unused import: `RMSNorm`
-warning: field `kernel_size` is never read
-warning: field `dim` is never read
+```gitignore
+# Should be added:
+*.wav
+*.npy
+*.f32
+validation/debug_outputs/
+validation/mimi_debug/
+validation/rust_outputs/
+validation/reference_outputs/
 ```
 
-### 4. Modified Binary Files
+### 2. Hardcoded Paths in Python Scripts
 
-- `validation/rust_outputs/phrase_00_rust.wav` (changed 169KB -> 173KB)
-- `validation/rust_outputs/phrase_00_rust_latents.npy` (changed 5.6KB -> 5.8KB)
-
-These are generated test outputs. **Verify:** Should these be in .gitignore instead of committed?
+Some validation scripts may contain hardcoded absolute paths (e.g., `/Users/ramerman/...`). These should be made relative or configurable.
 
 ---
 
 ## Low Priority / Notes
 
-### 1. New docs/ Directory
+### 1. No Compiler Warnings
 
-`docs/prompts/cleanup-audit.md` - The cleanup audit prompt template. Appears intentional.
+`cargo check` completes cleanly with no warnings - good hygiene.
 
-### 2. println! Statements in Test Binary
+### 2. No TODO/FIXME Comments
 
-`src/bin/test_tts.rs` has many `println!` statements, but these are appropriate for a test/CLI tool.
+No stale task markers found in the codebase.
+
+### 3. Clean Git State
+
+All changes properly committed. The previous audit (which noted 7 uncommitted files) has been addressed.
 
 ---
 
 ## Files Reviewed
 
-**Modified:**
-- [PORTING_STATUS.md](../../PORTING_STATUS.md) - +70 lines of session notes
-- [src/models/flowlm.rs](../../src/models/flowlm.rs) - Debug code + config change
-- [src/modules/attention.rs](../../src/modules/attention.rs) - Debug code with static counter
-- `validation/rust_outputs/phrase_00_rust.wav` - Binary output
-- `validation/rust_outputs/phrase_00_rust_latents.npy` - Binary output
-
-**Untracked:**
-- `docs/` - New documentation directory
-- `validation/dump_attention.py` - Debug script
-
-**Also Scanned (not modified, but contain debug code from previous commits):**
-- `src/modules/flownet.rs`
+**Rust Source (for debug patterns):**
+- `src/models/flowlm.rs`
 - `src/models/mimi.rs`
 - `src/models/pocket_tts.rs`
+- `src/modules/attention.rs`
+- `src/modules/flownet.rs`
 - `src/modules/embeddings.rs`
+- `src/bin/test_tts.rs`
+
+**Configuration:**
+- `.gitignore`
+
+**Previous Audit:**
+- `docs/audit/cleanup-audit-report-1.md` (now renamed to `-2.md`)
 
 ---
 
 ## Recommendations
 
-1. **Keep debug code for now** - Active porting work is ongoing. Create a cleanup task for when porting is complete.
+1. **Keep debug code for now** - Active porting work is ongoing (latents match but waveform correlation is ~0.013)
 
-2. **Consider debug feature flag** - Wrap diagnostics in `#[cfg(feature = "debug")]` or use `tracing` crate for proper logging levels.
+2. **Add debug feature flag** - When ready, wrap diagnostics in `#[cfg(feature = "debug")]` or use `tracing` crate
 
-3. **Add to .gitignore** (if not already):
-   - `validation/rust_outputs/*.wav`
-   - `validation/rust_outputs/*.npy`
-   - `validation/dump_attention.py` (or fix paths if keeping)
+3. **Update .gitignore before next commit** - Add patterns for:
+   - `*.wav`
+   - `*.npy`
+   - `*.f32`
+   - `validation/*_outputs/`
+   - `validation/mimi_debug/`
 
-4. **Run `cargo fix`** - Fixes the unused import automatically.
+4. **Remove tracked binaries** - Run:
+   ```bash
+   git rm --cached '*.wav' '*.npy' '*.f32'
+   ```
+   Then update .gitignore and commit
 
 ---
 
 ## Cleanup Activity Log
 
 ### 2026-01-24
-- **Ran `cargo fix`** - Removed unused `RMSNorm` import from `src/models/flowlm.rs`
-- **Skipped unused fields** - `kernel_size` (mimi.rs) and `dim` (rotary.rs) left as-is; likely needed for future use
-- **Skipped debug statements** - Porting still active; keeping diagnostics per report recommendation
+- Fresh audit performed with clean working tree
+- Previous audit archived as `-2.md`
+- Identified 89 tracked binary files that should be in .gitignore
+- Verified no compiler warnings
+- Confirmed debug instrumentation is expected during active porting

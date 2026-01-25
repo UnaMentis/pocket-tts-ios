@@ -19,3 +19,14 @@
 .venv/
 __pycache__/
 *.pyc
+
+# Validation debug outputs (transient)
+# NOTE: validation/reference_outputs/ is INTENTIONALLY tracked (ground truth)
+test_output.wav
+validation/debug_outputs/
+validation/mimi_debug/
+validation/rust_outputs/
+validation/reference_zeros/
+validation/denormalized_latents.*
+validation/python_*.npy
+validation/stage_*
