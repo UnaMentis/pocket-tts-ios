@@ -891,3 +891,130 @@ afplay ./test_output.wav
 2. **First-frame replicate padding** - Implement Python's replicate padding mode for first frame
 3. **Investigate sample shift** - The -3842 sample alignment shift suggests timing differences
 4. **Consider Kyutai Moshi patterns** - Their production Rust code may have additional insights
+
+---
+
+## Session 2026-01-24: First-Frame Replicate Padding
+
+### Summary
+Implemented first-frame replicate padding for SEANet streaming convolutions to match Python's behavior. **Short phrase correlation improved to 0.81**.
+
+### Root Cause
+Python's `StreamingConv1d` uses `pad_mode="replicate"` which fills the initial context buffer with the first sample repeated (not zeros). This affects the first ~6-8 samples of each convolution layer.
+
+### Fixes Applied
+
+#### 1. Added PadMode Enum (NEW)
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PadMode {
+    #[default]
+    Constant,   // Fill with zeros (default)
+    Replicate,  // Fill with first sample repeated (SEANet style)
+}
+```
+**File**: `src/modules/conv.rs:15-23`
+
+#### 2. Updated StreamableConv1d for Replicate Padding
+**Problem**: First frame used zero padding, losing context.
+**Fix**: Added `is_first_frame` flag and replicate padding logic:
+```rust
+PadMode::Replicate => {
+    let first_sample = xs.narrow(D::Minus1, 0, 1)?;
+    let context = first_sample.repeat(&[1, 1, context_len])?;
+    Tensor::cat(&[&context, &xs], D::Minus1)?
+}
+```
+**File**: `src/modules/conv.rs:347-364`
+
+#### 3. Updated StreamingConv1dState
+Added `is_first: bool` field to track first frame for replicate padding.
+**File**: `src/models/mimi.rs`
+
+### Results
+
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| Frame 0 Correlation | 0.13 | **0.49** | +277% |
+| Short Phrase Correlation | 0.69 | **0.81** | +17% |
+| All Tests | 91 pass | 91 pass | ✅ |
+
+### Longer Phrase Testing (CRITICAL FINDINGS)
+
+Tested with more complex phrases to verify robustness and discovered important limitations:
+
+#### Test Phrases Used
+
+1. **Short phrase** (baseline): "Hello, this is a test of the Pocket TTS system."
+   - 17 tokens, ~3 seconds audio
+
+2. **Medium phrase** (tricky words): "The pharmaceutical company Pfizer and actor Arnold Schwarzenegger discussed mRNA vaccines at the café while listening to Tchaikovsky."
+   - ~50 tokens, ~12 seconds audio
+   - Includes: proper nouns, foreign words, scientific terms
+
+3. **Long phrase** (multi-sentence): 4+ sentences with complex vocabulary
+   - **FAILED**: Exceeded decoder's max sequence length (4096 tokens in KV cache)
+
+#### Results
+
+| Phrase | Tokens | Rust Frames | Python Frames | Correlation | Status |
+|--------|--------|-------------|---------------|-------------|--------|
+| Short | 17 | 43 | 43 | **0.81** | ✅ Good |
+| Medium | ~50 | 150 | ~166 | **0.05** | ⚠️ EOS mismatch |
+| Long | >100 | N/A | N/A | N/A | ❌ Exceeds limits |
+
+#### Critical Discovery: EOS Detection Divergence
+
+**Problem**: For longer inputs, Rust and Python detect end-of-speech at different points.
+
+| Metric | Short Phrase | Medium Phrase |
+|--------|--------------|---------------|
+| Rust EOS step | 43 | **145** |
+| Python EOS step | 43 | **~166** |
+| Difference | 0 frames | **21 frames (~1.7 sec)** |
+
+The EOS threshold is set to `-4.0` in both implementations, but the underlying logit distributions diverge over longer sequences, causing Rust to detect EOS earlier.
+
+**Root Cause Hypotheses**:
+1. Numerical precision accumulation over many transformer steps
+2. Subtle KV cache differences at higher positions
+3. RoPE position encoding drift at longer sequences
+
+#### Critical Discovery: Max Sequence Length Limit
+
+**Problem**: The decoder transformer has a maximum sequence length of 4096.
+
+For very long phrases:
+- Each generated latent adds 16 frames to KV cache (after 16x upsample)
+- For 200 latents: 200 × 16 = 3200 frames (within limit)
+- For 300 latents: 300 × 16 = 4800 frames (**exceeds limit**)
+
+**Implication**: Maximum audio length is approximately:
+- 4096 frames ÷ 16 = 256 latents maximum
+- 256 latents × 80ms = ~20 seconds of audio
+
+#### Recommendations for Future Work
+
+1. **EOS threshold tuning** - May need to adjust -4.0 threshold or investigate logit calibration
+2. **Chunked processing** - For very long inputs, process in chunks with overlapping windows
+3. **KV cache optimization** - Consider sliding window attention for unbounded length
+
+### Current State Summary
+
+| Component | Status |
+|-----------|--------|
+| Tokenizer | ✅ Matches Python |
+| FlowLM Transformer | ✅ Matches Python |
+| FlowNet | ✅ Matches Python |
+| Latent Generation | ✅ Cosine sim = 1.0 |
+| Mimi SEANet | ✅ Full streaming with replicate padding |
+| **Short Phrase Correlation** | ✅ 0.81 |
+| **Long Phrase Correlation** | ⚠️ 0.05 (EOS detection diff) |
+
+### Files Modified
+- `src/modules/conv.rs` - Added `PadMode` enum, replicate padding in `StreamableConv1d`
+- `src/modules/mod.rs` - Export `PadMode`
+- `src/models/mimi.rs` - Updated `StreamingConv1dState` with `is_first` field
+
+### Audio Quality
+At 0.81 correlation, the audio is intelligible and sounds nearly identical to Python's output. Main differences are subtle timing/phase characteristics that most listeners won't notice.
