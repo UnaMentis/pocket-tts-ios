@@ -17,6 +17,21 @@ Each release includes:
 
 See [docs/INTEGRATION.md](docs/INTEGRATION.md) for detailed integration instructions.
 
+## Demo App
+
+A full-featured iOS demo app is included for testing and validation.
+
+![PocketTTS Demo App](tests/ios-harness/screenshot.png)
+
+The demo app includes:
+- **Text-to-Speech Synthesis** with all 8 built-in voices
+- **Real-time Resource Monitoring** (memory, CPU, thermal state)
+- **Performance Metrics** (synthesis time, audio duration, RTF)
+- **Waveform Visualization** of generated audio
+- **Audio Export** for validation testing
+
+See [tests/ios-harness/README.md](tests/ios-harness/README.md) for setup instructions.
+
 ## Architecture
 
 ```
