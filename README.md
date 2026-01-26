@@ -4,6 +4,9 @@
 [![Platform: iOS](https://img.shields.io/badge/Platform-iOS%2017%2B-blue?logo=apple)](https://developer.apple.com/ios/)
 [![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange?logo=rust)](https://www.rust-lang.org/)
 [![Backers](https://opencollective.com/unamentis/backers/badge.svg)](https://opencollective.com/unamentis)
+[![Rust CI](https://github.com/UnaMentis/pocket-tts-ios/actions/workflows/rust.yml/badge.svg)](https://github.com/UnaMentis/pocket-tts-ios/actions/workflows/rust.yml)
+[![iOS Build](https://github.com/UnaMentis/pocket-tts-ios/actions/workflows/ios.yml/badge.svg)](https://github.com/UnaMentis/pocket-tts-ios/actions/workflows/ios.yml)
+[![Security](https://github.com/UnaMentis/pocket-tts-ios/actions/workflows/security.yml/badge.svg)](https://github.com/UnaMentis/pocket-tts-ios/actions/workflows/security.yml)
 
 Native iOS implementation of Kyutai Pocket TTS using Rust/Candle.
 
@@ -136,6 +139,17 @@ kyutai-pocket-ios/
 - Time to first audio: ~200ms
 - Real-time factor: ~3-4x on iPhone 15 Pro (estimated)
 - Memory usage: ~150MB during inference
+
+## Quality
+
+This project uses comprehensive quality infrastructure:
+
+- **Pre-commit hooks**: rustfmt, clippy, gitleaks, tests
+- **CI/CD pipelines**: Lint, test, coverage, iOS build, security scan
+- **Code coverage**: cargo-tarpaulin with 70% minimum threshold
+- **AI review**: CodeRabbit integration
+
+See [docs/quality/QUALITY_PLAN.md](docs/quality/QUALITY_PLAN.md) for details.
 
 ## Credits
 
