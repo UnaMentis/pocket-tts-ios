@@ -1,5 +1,10 @@
 # Pocket TTS iOS
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Platform: iOS](https://img.shields.io/badge/Platform-iOS%2017%2B-blue?logo=apple)](https://developer.apple.com/ios/)
+[![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange?logo=rust)](https://www.rust-lang.org/)
+[![Backers](https://opencollective.com/unamentis/backers/badge.svg)](https://opencollective.com/unamentis)
+
 Native iOS implementation of Kyutai Pocket TTS using Rust/Candle.
 
 ## Overview
