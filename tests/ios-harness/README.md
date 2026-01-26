@@ -4,6 +4,19 @@ A comprehensive iOS test harness for validating the Pocket TTS XCFramework. This
 
 ![PocketTTS Demo Screenshot](screenshot.png)
 
+## Demo App Overview
+
+The screenshot above shows the PocketTTS Demo app after completing a synthesis:
+
+- **System Resources** panel displays real-time memory usage, CPU load, and thermal state
+- **Text Input** field where you enter text to synthesize
+- **Voice Selector** with 8 built-in voices (segmented control)
+- **Status Bar** shows model load time and synthesis results
+- **Performance Metrics** display synthesis time, audio duration, and real-time factor (RTF)
+- **Synthesize Button** triggers TTS generation
+- **Play/Stop Button** controls audio playback (turns red when playing)
+- **Waveform View** (appears after synthesis) shows visual preview of the generated audio
+
 ## Features
 
 - **Text-to-Speech Synthesis**: Enter any text and synthesize speech
