@@ -21,7 +21,9 @@ See [docs/INTEGRATION.md](docs/INTEGRATION.md) for detailed integration instruct
 
 A full-featured iOS demo app is included for testing and validation.
 
-![PocketTTS Demo App](tests/ios-harness/screenshot.png)
+<a href="tests/ios-harness/screenshot.png">
+  <img src="tests/ios-harness/screenshot.png" width="300" alt="PocketTTS Demo App">
+</a>
 
 The demo app includes:
 - **Text-to-Speech Synthesis** with all 8 built-in voices
