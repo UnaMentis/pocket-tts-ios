@@ -1,0 +1,24 @@
+name: PocketTTSDemo
+options:
+  bundleIdPrefix: com.unamentis
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "15.0"
+
+targets:
+  PocketTTSDemo:
+    type: application
+    platform: iOS
+    sources:
+      - PocketTTSDemo
+      - path: PocketTTSDemo/Models
+        type: folder
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.unamentis.PocketTTSDemo
+      INFOPLIST_FILE: PocketTTSDemo/Info.plist
+      SWIFT_VERSION: "5.9"
+      ENABLE_USER_SCRIPT_SANDBOXING: NO
+      OTHER_LDFLAGS: ["-lc++"]
+    dependencies:
+      - framework: Frameworks/PocketTTS.xcframework
+        embed: true

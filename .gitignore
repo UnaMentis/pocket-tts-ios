@@ -30,3 +30,13 @@ validation/reference_zeros/
 validation/denormalized_latents.*
 validation/python_*.npy
 validation/stage_*
+validation/venv/
+
+# iOS Test Harness - generated/downloaded by setup.sh
+tests/ios-harness/PocketTTS-v0.4.0/
+tests/ios-harness/*.zip
+tests/ios-harness/PocketTTSDemo/Frameworks/
+tests/ios-harness/PocketTTSDemo/PocketTTSDemo/Models/
+tests/ios-harness/PocketTTSDemo/PocketTTSDemo/pocket_tts_ios.swift
+tests/ios-harness/PocketTTSDemo/PocketTTSDemo/PocketTTSSwift.swift
+tests/ios-harness/PocketTTSDemo/*.xcodeproj/
