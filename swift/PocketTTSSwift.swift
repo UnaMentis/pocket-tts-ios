@@ -76,12 +76,12 @@ public actor PocketTTSSwift {
 
         public static let `default` = Config()
         public static let lowLatency = Config(consistencySteps: 1)
-        public static let highQuality = Config(consistencySteps: 4, temperature: 0.5)
+        public static let highQuality = Config(temperature: 0.5, consistencySteps: 4)
     }
 
     // MARK: - Properties
 
-    private var engine: PocketTTSEngine?
+    private var engine: PocketTtsEngine?
     private let modelPath: String
 
     // MARK: - Initialization
@@ -94,7 +94,7 @@ public actor PocketTTSSwift {
 
     /// Load the TTS model
     public func load() async throws {
-        engine = try PocketTTSEngine(modelPath: modelPath)
+        engine = try PocketTtsEngine(modelPath: modelPath)
     }
 
     /// Check if model is loaded
@@ -114,7 +114,7 @@ public actor PocketTTSSwift {
             throw PocketTTSSwiftError.modelNotLoaded
         }
 
-        let rustConfig = TTSConfig(
+        let rustConfig = TtsConfig(
             voiceIndex: config.voiceIndex,
             temperature: config.temperature,
             topP: config.topP,
@@ -128,8 +128,8 @@ public actor PocketTTSSwift {
     }
 
     /// Get available voices
-    public static var availableVoices: [Voice] {
-        pocket_tts_ios.availableVoices().map { info in
+    public static var voices: [Voice] {
+        availableVoices().map { info in
             Voice(
                 index: info.index,
                 name: info.name,
@@ -220,14 +220,14 @@ public actor PocketTTSSwift {
 // MARK: - Streaming Handler
 
 @available(iOS 17.0, *)
-private class StreamingHandler: TTSEventHandler {
+private class StreamingHandler: TtsEventHandler {
     private let continuation: AsyncThrowingStream<PocketTTSSwift.AudioChunk, Error>.Continuation
 
     init(continuation: AsyncThrowingStream<PocketTTSSwift.AudioChunk, Error>.Continuation) {
         self.continuation = continuation
     }
 
-    func onAudioChunk(chunk: pocket_tts_ios.AudioChunk) {
+    func onAudioChunk(chunk: AudioChunk) {
         continuation.yield(PocketTTSSwift.AudioChunk(
             audioData: Data(chunk.audioData),
             sampleRate: chunk.sampleRate,
