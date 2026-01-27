@@ -40,7 +40,7 @@ struct LatencyResult {
     token_count: usize,
 
     // Timing metrics (all in milliseconds)
-    ttfa_ms: f64,           // Time to first audio chunk
+    ttfa_ms: f64,            // Time to first audio chunk
     total_synthesis_ms: f64, // Total time for complete synthesis
     audio_duration_ms: f64,  // Duration of generated audio
     rtf: f64,                // Real-time factor (audio_duration / synthesis_time)
@@ -135,37 +135,37 @@ fn parse_args() -> BenchConfig {
                     config.model_dir = PathBuf::from(&args[i + 1]);
                     i += 1;
                 }
-            }
+            },
             "--iterations" | "-n" => {
                 if i + 1 < args.len() {
                     config.iterations = args[i + 1].parse().unwrap_or(5);
                     i += 1;
                 }
-            }
+            },
             "--streaming" | "-s" => {
                 config.streaming = true;
-            }
+            },
             "--warmup" | "-w" => {
                 if i + 1 < args.len() {
                     config.warmup = args[i + 1].parse().unwrap_or(1);
                     i += 1;
                 }
-            }
+            },
             "--json" | "-j" => {
                 if i + 1 < args.len() {
                     config.json_output = Some(PathBuf::from(&args[i + 1]));
                     i += 1;
                 }
-            }
+            },
             "--help" | "-h" => {
                 print_usage();
                 std::process::exit(0);
-            }
+            },
             _ => {
                 eprintln!("Unknown argument: {}", args[i]);
                 print_usage();
                 std::process::exit(1);
-            }
+            },
         }
         i += 1;
     }
@@ -205,7 +205,7 @@ fn load_model(model_dir: &Path) -> PocketTTSModel {
         Err(e) => {
             eprintln!("ERROR: Failed to load model: {:?}", e);
             std::process::exit(1);
-        }
+        },
     };
 
     let load_time = start.elapsed();
@@ -240,7 +240,7 @@ fn run_sync_benchmarks(mut model: PocketTTSModel, config: &BenchConfig) -> Vec<L
                 Err(e) => {
                     eprintln!("  Iteration {}: ERROR - {:?}", iteration + 1, e);
                     continue;
-                }
+                },
             };
             let elapsed = start.elapsed();
 
@@ -277,10 +277,7 @@ fn run_sync_benchmarks(mut model: PocketTTSModel, config: &BenchConfig) -> Vec<L
         if !results.is_empty() {
             let avg_ttfa = results.iter().map(|r| r.ttfa_ms).sum::<f64>() / results.len() as f64;
             let avg_rtf = results.iter().map(|r| r.rtf).sum::<f64>() / results.len() as f64;
-            println!(
-                "  Average: {:.1}ms TTFA, {:.2}x RTF\n",
-                avg_ttfa, avg_rtf
-            );
+            println!("  Average: {:.1}ms TTFA, {:.2}x RTF\n", avg_ttfa, avg_rtf);
         }
 
         all_results.extend(results);
@@ -422,10 +419,7 @@ fn print_results(results: &[LatencyResult], config: &BenchConfig) {
 
     // Group by phrase type
     for phrase_type in ["short", "medium", "long"] {
-        let phrase_results: Vec<_> = results
-            .iter()
-            .filter(|r| r.phrase_type == phrase_type)
-            .collect();
+        let phrase_results: Vec<_> = results.iter().filter(|r| r.phrase_type == phrase_type).collect();
 
         if phrase_results.is_empty() {
             continue;
@@ -440,13 +434,17 @@ fn print_results(results: &[LatencyResult], config: &BenchConfig) {
         let avg_total = phrase_results.iter().map(|r| r.total_synthesis_ms).sum::<f64>() / phrase_results.len() as f64;
 
         println!("  {} phrase:", phrase_type.to_uppercase());
-        println!("    TTFA:     {:.1}ms (min: {:.1}ms, max: {:.1}ms)", avg_ttfa, min_ttfa, max_ttfa);
+        println!(
+            "    TTFA:     {:.1}ms (min: {:.1}ms, max: {:.1}ms)",
+            avg_ttfa, min_ttfa, max_ttfa
+        );
         println!("    Total:    {:.1}ms", avg_total);
         println!("    RTF:      {:.2}x", avg_rtf);
 
         if config.streaming {
             let avg_chunks = phrase_results.iter().map(|r| r.chunk_count).sum::<usize>() / phrase_results.len();
-            let avg_chunk_lat = phrase_results.iter().map(|r| r.avg_chunk_latency_ms).sum::<f64>() / phrase_results.len() as f64;
+            let avg_chunk_lat =
+                phrase_results.iter().map(|r| r.avg_chunk_latency_ms).sum::<f64>() / phrase_results.len() as f64;
             println!("    Chunks:   {} (avg {:.1}ms each)", avg_chunks, avg_chunk_lat);
         }
         println!();
