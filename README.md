@@ -136,9 +136,19 @@ kyutai-pocket-ios/
 
 ## Performance
 
-- Time to first audio: ~200ms
-- Real-time factor: ~3-4x on iPhone 15 Pro (estimated)
+- Time to first audio (TTFA): ~200ms
+- Real-time factor (RTF): ~3-4x on iPhone 15 Pro
 - Memory usage: ~150MB during inference
+
+### Latency Benchmarking
+
+Run latency tests to validate performance:
+```bash
+./scripts/run-latency-bench.sh --streaming  # Measure TTFA
+./scripts/run-latency-bench.sh --all        # Test both modes
+```
+
+See [docs/LATENCY_TESTING.md](docs/LATENCY_TESTING.md) for detailed benchmarking instructions.
 
 ## Quality
 

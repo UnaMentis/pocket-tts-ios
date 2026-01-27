@@ -38,6 +38,19 @@ struct ContentView: View {
                         .pickerStyle(.segmented)
                     }
 
+                    // Synthesis Mode Toggle
+                    HStack {
+                        Text("Mode")
+                            .font(.headline)
+                        Spacer()
+                        Picker("Mode", selection: $viewModel.useStreaming) {
+                            Text("Sync").tag(false)
+                            Text("Stream").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 150)
+                    }
+
                     // Status
                     if let status = viewModel.status {
                         StatusView(status: status)
@@ -208,13 +221,68 @@ struct TimingView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Performance")
-                .font(.headline)
+            HStack {
+                Text("Performance")
+                    .font(.headline)
+                Spacer()
+                if timing.ttfaMs != nil {
+                    Text("Streaming")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Color.blue.opacity(0.1))
+                        .cornerRadius(4)
+                } else {
+                    Text("Sync")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Color.gray.opacity(0.1))
+                        .cornerRadius(4)
+                }
+            }
 
             HStack {
+                // TTFA - most important latency metric
+                if let ttfa = timing.ttfaMs {
+                    VStack {
+                        Text(String(format: "%.0fms", ttfa))
+                            .font(.title3)
+                            .fontWeight(.bold)
+                            .foregroundColor(ttfa <= 300 ? .green : .orange)
+                        Text("TTFA")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+
                 TimingItem(label: "Synthesis", value: timing.synthesisTime, unit: "s")
                 TimingItem(label: "Audio", value: timing.audioDuration, unit: "s")
                 TimingItem(label: "RTF", value: timing.realtimeFactor, unit: "x")
+            }
+
+            // Additional streaming info
+            if let chunks = timing.chunkCount {
+                HStack {
+                    Spacer()
+                    Text("\(chunks) chunks")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            // Baseline comparison
+            if let ttfa = timing.ttfaMs {
+                HStack {
+                    Image(systemName: ttfa <= 200 ? "checkmark.circle.fill" : (ttfa <= 300 ? "exclamationmark.circle.fill" : "xmark.circle.fill"))
+                        .foregroundColor(ttfa <= 200 ? .green : (ttfa <= 300 ? .orange : .red))
+                    Text(ttfa <= 200 ? "Meets baseline (≤200ms)" : (ttfa <= 300 ? "Acceptable (≤300ms)" : "Exceeds target (>300ms)"))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
         }
         .padding()

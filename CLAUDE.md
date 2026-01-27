@@ -25,6 +25,12 @@ cargo fmt
 
 # Build for iOS (creates XCFramework)
 ./scripts/build-ios.sh
+
+# Run latency benchmark (streaming mode with TTFA)
+./scripts/run-latency-bench.sh --streaming
+
+# Quick latency test (3 iterations)
+./scripts/run-latency-bench.sh --quick
 ```
 
 ## Architecture
@@ -94,6 +100,29 @@ kyutai-pocket-ios/
 - Pocket TTS is optimized for CPU, targeting ~3-4x realtime on iPhone
 - Memory-mapped safetensors for efficient loading
 - KV caching for efficient streaming
+
+## Latency Testing
+
+Reference baselines (see `docs/LATENCY_TESTING.md` for full details):
+
+| Metric | Target | Acceptable |
+|--------|--------|------------|
+| TTFA (Time To First Audio) | ~200ms | ≤300ms |
+| RTF (Real-Time Factor) | 3-4x | ≥2.5x |
+
+Run latency benchmarks:
+```bash
+# Streaming mode (measures TTFA)
+./scripts/run-latency-bench.sh --streaming
+
+# Both sync and streaming
+./scripts/run-latency-bench.sh --all
+
+# Quick 3-iteration test
+./scripts/run-latency-bench.sh --quick
+```
+
+The iOS demo app also displays TTFA when using streaming mode (toggle Sync/Stream).
 
 ## Dependencies
 

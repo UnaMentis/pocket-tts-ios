@@ -17,12 +17,14 @@ class TTSViewModel: ObservableObject {
     @Published var isPlaying = false
     @Published var isLoading = false
     @Published var savedAudioPath: String?
+    @Published var useStreaming = true  // Toggle for streaming vs sync mode
 
     let resourceMonitor = ResourceMonitor()
 
     private var engine: PocketTtsEngine?
     private var audioPlayer: AVAudioPlayer?
     private var audioPlayerDelegate: AudioPlayerDelegate?  // Must retain - AVAudioPlayer.delegate is weak
+    private var streamingHandler: StreamingEventHandler?  // Must retain for streaming callbacks
 
     init() {
         resourceMonitor.startMonitoring()
@@ -82,11 +84,20 @@ class TTSViewModel: ObservableObject {
     }
 
     func synthesize() {
+        if useStreaming {
+            synthesizeStreaming()
+        } else {
+            synthesizeSync()
+        }
+    }
+
+    /// Synchronous synthesis mode
+    private func synthesizeSync() {
         guard !isSynthesizing else { return }
         guard !inputText.isEmpty else { return }
 
         isSynthesizing = true
-        status = TTSStatus(message: "Synthesizing...", isLoading: true, type: .info)
+        status = TTSStatus(message: "Synthesizing (sync)...", isLoading: true, type: .info)
         resourceMonitor.markSynthesisStart()
 
         Task {
@@ -109,7 +120,7 @@ class TTSViewModel: ObservableObject {
                 )
                 try ttsEngine.configure(config: config)
 
-                print("[PocketTTS] Synthesizing: \(inputText)")
+                print("[PocketTTS] Synthesizing (sync): \(inputText)")
 
                 // Synthesize
                 let result = try ttsEngine.synthesize(text: inputText)
@@ -138,11 +149,11 @@ class TTSViewModel: ObservableObject {
                 }
 
                 status = TTSStatus(
-                    message: String(format: "Synthesis complete! %.2fx realtime", audioDuration / synthesisTime),
+                    message: String(format: "Sync complete! %.2fx realtime", audioDuration / synthesisTime),
                     isLoading: false,
                     type: .success
                 )
-                print("[PocketTTS] Synthesis complete: \(audioSamples?.count ?? 0) samples, \(audioDuration)s audio in \(synthesisTime)s")
+                print("[PocketTTS] Sync synthesis complete: \(audioSamples?.count ?? 0) samples, \(audioDuration)s audio in \(synthesisTime)s")
             } catch {
                 status = TTSStatus(
                     message: "Synthesis failed: \(error.localizedDescription)",
@@ -154,6 +165,144 @@ class TTSViewModel: ObservableObject {
 
             isSynthesizing = false
         }
+    }
+
+    /// Streaming synthesis mode with TTFA measurement
+    private func synthesizeStreaming() {
+        guard !isSynthesizing else { return }
+        guard !inputText.isEmpty else { return }
+
+        isSynthesizing = true
+        status = TTSStatus(message: "Synthesizing (streaming)...", isLoading: true, type: .info)
+        resourceMonitor.markSynthesisStart()
+
+        Task {
+            do {
+                guard let ttsEngine = engine else {
+                    throw TTSError.engineNotInitialized
+                }
+
+                // Update voice if changed
+                let config = TtsConfig(
+                    voiceIndex: UInt32(selectedVoice.rawValue),
+                    temperature: 0.7,
+                    topP: 0.9,
+                    speed: 1.0,
+                    consistencySteps: 2,
+                    useFixedSeed: true,
+                    seed: 42
+                )
+                try ttsEngine.configure(config: config)
+
+                print("[PocketTTS] Synthesizing (streaming): \(inputText)")
+
+                let startTime = CFAbsoluteTimeGetCurrent()
+
+                // Create streaming handler with TTFA measurement
+                let handler = StreamingEventHandler(
+                    startTime: startTime,
+                    sampleRate: 24000,
+                    onComplete: { [weak self] result in
+                        Task { @MainActor in
+                            guard let self = self else { return }
+
+                            self.resourceMonitor.markSynthesisEnd()
+
+                            // Build WAV from collected samples
+                            let wavData = self.buildWav(samples: result.samples, sampleRate: 24000)
+                            self.audioData = wavData
+                            self.audioSamples = result.samples
+
+                            self.lastTiming = SynthesisTiming(
+                                synthesisTime: result.totalTime,
+                                audioDuration: result.audioDuration,
+                                realtimeFactor: result.audioDuration / result.totalTime,
+                                ttfaMs: result.ttfaMs,
+                                chunkCount: result.chunkCount
+                            )
+
+                            // Auto-save audio for validation
+                            if let wavData = self.audioData {
+                                self.saveAudioForValidation(wavData)
+                            }
+
+                            let ttfaString = String(format: "%.0fms", result.ttfaMs)
+                            self.status = TTSStatus(
+                                message: String(format: "Streaming complete! TTFA: %@, %.2fx RTF", ttfaString, result.audioDuration / result.totalTime),
+                                isLoading: false,
+                                type: .success
+                            )
+                            print("[PocketTTS] Streaming complete: TTFA=\(ttfaString), \(result.samples.count) samples, \(result.chunkCount) chunks")
+
+                            self.isSynthesizing = false
+                        }
+                    },
+                    onError: { [weak self] error in
+                        Task { @MainActor in
+                            guard let self = self else { return }
+                            self.status = TTSStatus(
+                                message: "Streaming failed: \(error)",
+                                isLoading: false,
+                                type: .error
+                            )
+                            self.isSynthesizing = false
+                        }
+                    }
+                )
+
+                // Retain handler reference
+                self.streamingHandler = handler
+
+                // Start streaming synthesis
+                try ttsEngine.startStreaming(text: inputText, handler: handler)
+
+            } catch {
+                status = TTSStatus(
+                    message: "Streaming failed: \(error.localizedDescription)",
+                    isLoading: false,
+                    type: .error
+                )
+                print("[PocketTTS] Streaming synthesis failed: \(error)")
+                isSynthesizing = false
+            }
+        }
+    }
+
+    /// Build a WAV file from raw float samples
+    private func buildWav(samples: [Float], sampleRate: UInt32) -> Data {
+        var data = Data()
+
+        // WAV header for 32-bit float
+        let numSamples = UInt32(samples.count)
+        let dataSize = numSamples * 4  // 4 bytes per float
+        let fileSize = 36 + dataSize
+
+        // RIFF header
+        data.append(contentsOf: "RIFF".utf8)
+        data.append(contentsOf: withUnsafeBytes(of: fileSize.littleEndian) { Array($0) })
+        data.append(contentsOf: "WAVE".utf8)
+
+        // fmt chunk
+        data.append(contentsOf: "fmt ".utf8)
+        data.append(contentsOf: withUnsafeBytes(of: UInt32(16).littleEndian) { Array($0) })  // chunk size
+        data.append(contentsOf: withUnsafeBytes(of: UInt16(3).littleEndian) { Array($0) })   // format: IEEE float
+        data.append(contentsOf: withUnsafeBytes(of: UInt16(1).littleEndian) { Array($0) })   // channels
+        data.append(contentsOf: withUnsafeBytes(of: sampleRate.littleEndian) { Array($0) })  // sample rate
+        let byteRate = sampleRate * 4  // bytes per second
+        data.append(contentsOf: withUnsafeBytes(of: byteRate.littleEndian) { Array($0) })
+        data.append(contentsOf: withUnsafeBytes(of: UInt16(4).littleEndian) { Array($0) })   // block align
+        data.append(contentsOf: withUnsafeBytes(of: UInt16(32).littleEndian) { Array($0) })  // bits per sample
+
+        // data chunk
+        data.append(contentsOf: "data".utf8)
+        data.append(contentsOf: withUnsafeBytes(of: dataSize.littleEndian) { Array($0) })
+
+        // Sample data
+        for sample in samples {
+            data.append(contentsOf: withUnsafeBytes(of: sample) { Array($0) })
+        }
+
+        return data
     }
 
     func playAudio() {
@@ -354,9 +503,19 @@ struct TTSStatus {
 }
 
 struct SynthesisTiming {
-    let synthesisTime: Double
-    let audioDuration: Double
-    let realtimeFactor: Double
+    let synthesisTime: Double      // Total synthesis time (seconds)
+    let audioDuration: Double      // Audio duration (seconds)
+    let realtimeFactor: Double     // RTF = audioDuration / synthesisTime
+    let ttfaMs: Double?            // Time to first audio (milliseconds) - streaming only
+    let chunkCount: Int?           // Number of audio chunks - streaming only
+
+    init(synthesisTime: Double, audioDuration: Double, realtimeFactor: Double, ttfaMs: Double? = nil, chunkCount: Int? = nil) {
+        self.synthesisTime = synthesisTime
+        self.audioDuration = audioDuration
+        self.realtimeFactor = realtimeFactor
+        self.ttfaMs = ttfaMs
+        self.chunkCount = chunkCount
+    }
 }
 
 enum TTSError: LocalizedError {
@@ -370,5 +529,90 @@ enum TTSError: LocalizedError {
         case .engineNotInitialized:
             return "TTS engine not initialized"
         }
+    }
+}
+
+// MARK: - Streaming Event Handler
+
+/// Result from streaming synthesis
+struct StreamingResult {
+    let samples: [Float]
+    let ttfaMs: Double           // Time to first audio (milliseconds)
+    let totalTime: Double        // Total synthesis time (seconds)
+    let audioDuration: Double    // Audio duration (seconds)
+    let chunkCount: Int
+}
+
+/// Event handler for streaming synthesis with TTFA measurement
+class StreamingEventHandler: TtsEventHandler {
+    private let startTime: CFAbsoluteTime
+    private let sampleRate: UInt32
+    private var firstChunkTime: CFAbsoluteTime?
+    private var collectedSamples: [Float] = []
+    private var chunkCount: Int = 0
+
+    private let onComplete: (StreamingResult) -> Void
+    private let onError: (String) -> Void
+
+    init(
+        startTime: CFAbsoluteTime,
+        sampleRate: UInt32,
+        onComplete: @escaping (StreamingResult) -> Void,
+        onError: @escaping (String) -> Void
+    ) {
+        self.startTime = startTime
+        self.sampleRate = sampleRate
+        self.onComplete = onComplete
+        self.onError = onError
+    }
+
+    func onAudioChunk(chunk: AudioChunk) {
+        let now = CFAbsoluteTimeGetCurrent()
+
+        // Record TTFA on first chunk
+        if firstChunkTime == nil {
+            firstChunkTime = now
+            let ttfa = (now - startTime) * 1000.0  // Convert to ms
+            print("[PocketTTS] TTFA: \(String(format: "%.1f", ttfa))ms")
+        }
+
+        chunkCount += 1
+
+        // Extract float samples from chunk data
+        let audioData = chunk.audioData
+        let sampleCount = audioData.count / MemoryLayout<Float>.size
+        var samples = [Float](repeating: 0, count: sampleCount)
+        _ = samples.withUnsafeMutableBytes { buffer in
+            audioData.copyBytes(to: buffer)
+        }
+
+        collectedSamples.append(contentsOf: samples)
+
+        print("[PocketTTS] Chunk \(chunkCount): \(samples.count) samples, total: \(collectedSamples.count)")
+    }
+
+    func onProgress(progress: Float) {
+        // Progress updates (optional logging)
+    }
+
+    func onComplete() {
+        let endTime = CFAbsoluteTimeGetCurrent()
+        let totalTime = endTime - startTime
+        let audioDuration = Double(collectedSamples.count) / Double(sampleRate)
+        let ttfaMs = ((firstChunkTime ?? startTime) - startTime) * 1000.0
+
+        let result = StreamingResult(
+            samples: collectedSamples,
+            ttfaMs: ttfaMs,
+            totalTime: totalTime,
+            audioDuration: audioDuration,
+            chunkCount: chunkCount
+        )
+
+        onComplete(result)
+    }
+
+    func onError(message: String) {
+        onError(message)
     }
 }
