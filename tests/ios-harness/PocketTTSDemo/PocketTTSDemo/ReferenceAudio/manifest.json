@@ -1,0 +1,26 @@
+{
+  "sample_rate": 24000,
+  "phrases": [
+    {
+      "id": "short",
+      "text": "Hello world.",
+      "description": "Short phrase for quick testing",
+      "audio_file": "reference_short.wav",
+      "latents_file": "reference_short_latents.f32"
+    },
+    {
+      "id": "medium",
+      "text": "The quick brown fox jumps over the lazy dog.",
+      "description": "Medium phrase with all letters",
+      "audio_file": "reference_medium.wav",
+      "latents_file": "reference_medium_latents.f32"
+    },
+    {
+      "id": "long",
+      "text": "This is a longer test sentence to verify that the text to speech system handles extended input correctly and produces natural sounding audio.",
+      "description": "Long phrase for extended testing",
+      "audio_file": "reference_long.wav",
+      "latents_file": "reference_long_latents.f32"
+    }
+  ]
+}

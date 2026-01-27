@@ -92,9 +92,14 @@ interface PocketTTSEngine {
     [Throws=PocketTTSError]
     SynthesisResult synthesize_with_voice(string text, u32 voice_index);
 
-    // Start streaming synthesis
+    // Start streaming synthesis (chunks by tokens)
     [Throws=PocketTTSError]
     void start_streaming(string text, TTSEventHandler handler);
+
+    // Start true streaming synthesis (optimized TTFA)
+    // Tokenizes all text upfront and yields audio in small batches
+    [Throws=PocketTTSError]
+    void start_true_streaming(string text, TTSEventHandler handler);
 
     // Cancel ongoing synthesis
     void cancel();
@@ -105,6 +110,11 @@ interface PocketTTSEngine {
 
     // Clear reference audio (use built-in voice)
     void clear_reference_audio();
+
+    // Decode raw latents to audio (for reference testing)
+    // latents_data: raw f32 bytes [num_frames * 32]
+    [Throws=PocketTTSError]
+    SynthesisResult decode_latents(bytes latents_data, u32 num_frames);
 
     // Unload model to free memory
     void unload();

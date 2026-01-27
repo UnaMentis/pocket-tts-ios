@@ -140,7 +140,11 @@ impl Conv1d {
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let x = x.conv1d(&self.weight, self.padding, self.stride, 1, 1)?;
+        // CAUSAL padding: pad only on the left (like Python SEANet)
+        // For kernel k and stride 1: causal_pad = k - 1
+        let causal_pad = self.kernel_size - self.stride;
+        let x = x.pad_with_zeros(2, causal_pad, 0)?;  // left pad, no right pad
+        let x = x.conv1d(&self.weight, 0, self.stride, 1, 1)?;  // no built-in padding
         if let Some(bias) = &self.bias {
             let bias = bias.unsqueeze(0)?.unsqueeze(2)?;
             x.broadcast_add(&bias)
@@ -160,13 +164,10 @@ impl Conv1d {
         // Context length = kernel - stride (for stride=1, this is kernel - 1)
         let context_len = self.kernel_size - self.stride;
 
-        // On first frame, use REPLICATE padding (first sample repeated)
-        // This matches Python's StreamingConv1d with pad_mode="replicate"
+        // On first frame, use ZERO padding to match Python batch behavior
+        // (Python batch mode uses pad(x, (k-1, 0)) which is zero padding)
         if state.is_first && context_len > 0 {
-            // Get first sample: [batch, channels, 1]
-            let first_sample = x.narrow(2, 0, 1)?;
-            // Repeat to fill context: [batch, channels, context_len]
-            state.previous = first_sample.repeat(&[1, 1, context_len])?;
+            // Keep the zero buffer from initialization
             state.is_first = false;
         }
 
@@ -494,25 +495,14 @@ impl DecoderTransformerLayer {
         let q = q.permute((0, 2, 1, 3))?;
         let k = k.permute((0, 2, 1, 3))?;
 
-        // Scaled dot-product attention with causal mask
-        // Python's MimiStreamingMultiheadAttention uses causal attention
+        // Scaled dot-product attention - NON-CAUSAL (bidirectional)
+        // The decoder transformer uses bidirectional attention, not causal
+        // (See HuggingFace transformers MimiDecoder implementation)
         let scale = (self.head_dim as f64).sqrt();
         let attn = q.matmul(&k.transpose(2, 3)?)?;
         let attn = (attn / scale)?;
 
-        // Create causal mask: positions can only attend to earlier or same positions
-        // Shape: [seq, seq] -> [1, 1, seq, seq] for broadcasting
-        let device = attn.device();
-        let causal_mask = Tensor::tril2(seq, candle_core::DType::F32, device)?;
-        // Convert to attention mask: 1 (allowed) -> 0, 0 (masked) -> -inf
-        // First invert: 1 -> 0, 0 -> 1
-        let ones = Tensor::ones_like(&causal_mask)?;
-        let inverted = (ones - &causal_mask)?;
-        // Then multiply by large negative value
-        let attn_mask = (inverted * (-1e9))?;
-        let attn_mask = attn_mask.unsqueeze(0)?.unsqueeze(0)?; // [1, 1, seq, seq]
-
-        let attn = attn.broadcast_add(&attn_mask)?;
+        // No causal mask - full bidirectional attention
         let attn = candle_nn::ops::softmax(&attn, 3)?;
         let attn_out = attn.matmul(&v)?;
 
@@ -809,6 +799,14 @@ impl MimiDecoder {
         })
     }
 
+    /// Reset the decoder transformer's KV cache
+    ///
+    /// Call this before starting a new synthesis to clear any cached state
+    /// from previous sequences.
+    pub fn reset_decoder_cache(&mut self) {
+        self.decoder_transformer.reset_cache();
+    }
+
     /// Create initial streaming state for frame-by-frame processing
     pub fn init_streaming_state(&self, batch_size: usize, device: &Device) -> Result<StreamingMimiState> {
         // Depthwise upsampler: 512 channels, k=32, s=16 → overlap = 16
@@ -855,6 +853,73 @@ impl MimiDecoder {
                 output_conv_state,
             },
         })
+    }
+
+    /// Decode latents to audio using persistent streaming state
+    ///
+    /// Unlike `forward_true_streaming` which creates fresh state each call,
+    /// this method takes state as a parameter so it persists across calls.
+    /// This is essential for proper overlap-add between batches.
+    ///
+    /// Call `init_streaming_state()` once before the first batch,
+    /// then pass the state to each subsequent call.
+    ///
+    /// Input: [batch, seq, latent_dim] latent representations
+    /// Output: [batch, samples] audio waveform
+    pub fn forward_streaming_stateful(
+        &mut self,
+        latents: &Tensor,
+        state: &mut StreamingMimiState,
+    ) -> Result<Tensor> {
+        let (batch, seq, _latent_dim) = latents.dims3()?;
+        let device = latents.device();
+
+        // Step 1: Transpose to [batch, latent_dim, seq] for conv
+        let x = latents.transpose(1, 2)?;
+
+        // Step 2: Project from latent (32) to mimi dim (512)
+        // output_proj has k=1, so it's stateless
+        let x = self.output_proj.forward(&x)?;
+
+        // Step 3: Process frame by frame
+        let mut audio_chunks: Vec<Tensor> = Vec::with_capacity(seq);
+
+        for frame_idx in 0..seq {
+            // Extract single latent frame: [batch, 512, 1]
+            let frame = x.narrow(2, frame_idx, 1)?;
+
+            // 3a. Streaming upsample with persistent state: [batch, 512, 1] -> [batch, 512, 16]
+            let upsampled = self.upsample_convtr.forward_streaming(&frame, &mut state.upsample_state)?;
+            if upsampled.dim(2)? == 0 {
+                continue;
+            }
+
+            // 3b. Transpose for transformer: [batch, 16, 512]
+            let x = upsampled.transpose(1, 2)?;
+
+            // 3c. Streaming transformer with KV cache (persists across calls via self)
+            let x = self.decoder_transformer.forward_streaming(&x)?;
+
+            // 3d. Transpose for SEANet: [batch, 512, 16]
+            let x = x.transpose(1, 2)?;
+
+            // 3e. SEANet decoder with streaming convolutions
+            //     State persists across ALL frames for proper overlap-add accumulation
+            let audio = self.seanet.forward_streaming(&x, &mut state.seanet_state)?;
+
+            if audio.dim(2)? > 0 {
+                audio_chunks.push(audio);
+            }
+        }
+
+        let audio = if audio_chunks.is_empty() {
+            Tensor::zeros((batch, 1, 0), DType::F32, device)?
+        } else {
+            Tensor::cat(&audio_chunks, 2)?
+        };
+
+        // Squeeze channel dim: [batch, 1, samples] -> [batch, samples]
+        audio.squeeze(1)
     }
 
     /// Decode latents to audio waveform using streaming processing
@@ -905,14 +970,12 @@ impl MimiDecoder {
         } else {
             Tensor::cat(&upsampled_chunks, 2)?
         };
-        eprintln!("[Mimi-Stream] After streaming upsample: {:?}", x.dims());
 
         // Step 4: Transpose for transformer: [batch, seq*16, dim]
         let x = x.transpose(1, 2)?;
 
-        // Step 5: Decoder transformer (batch mode - needs full causal context)
+        // Step 5: Decoder transformer (batch mode - NON-CAUSAL)
         let x = self.decoder_transformer.forward(&x)?;
-        eprintln!("[Mimi-Stream] After decoder_transformer: {:?}", x.dims());
 
         // Step 6: Transpose for SEANet: [batch, dim, seq*16]
         let x = x.transpose(1, 2)?;

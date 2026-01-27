@@ -16,12 +16,14 @@ class TTSViewModel: ObservableObject {
     @Published var isSynthesizing = false
     @Published var isPlaying = false
     @Published var isLoading = false
+    @Published var isLoaded = false  // Model loaded successfully
     @Published var savedAudioPath: String?
     @Published var useStreaming = true  // Toggle for streaming vs sync mode
 
     let resourceMonitor = ResourceMonitor()
 
-    private var engine: PocketTtsEngine?
+    // Expose engine for reference testing
+    @Published var engine: PocketTtsEngine?
     private var audioPlayer: AVAudioPlayer?
     private var audioPlayerDelegate: AudioPlayerDelegate?  // Must retain - AVAudioPlayer.delegate is weak
     private var streamingHandler: StreamingEventHandler?  // Must retain for streaming callbacks
@@ -70,6 +72,7 @@ class TTSViewModel: ObservableObject {
                     type: .success
                 )
                 print("[PocketTTS] Model loaded successfully in \(loadTime)s")
+                isLoaded = true
             } catch {
                 status = TTSStatus(
                     message: "Failed to load model: \(error.localizedDescription)",
@@ -253,8 +256,8 @@ class TTSViewModel: ObservableObject {
                 // Retain handler reference
                 self.streamingHandler = handler
 
-                // Start streaming synthesis
-                try ttsEngine.startStreaming(text: inputText, handler: handler)
+                // Start true streaming synthesis (optimized TTFA)
+                try ttsEngine.startTrueStreaming(text: inputText, handler: handler)
 
             } catch {
                 status = TTSStatus(
@@ -551,8 +554,8 @@ class StreamingEventHandler: TtsEventHandler {
     private var collectedSamples: [Float] = []
     private var chunkCount: Int = 0
 
-    private let onComplete: (StreamingResult) -> Void
-    private let onError: (String) -> Void
+    private let completionHandler: (StreamingResult) -> Void
+    private let errorHandler: (String) -> Void
 
     init(
         startTime: CFAbsoluteTime,
@@ -562,8 +565,8 @@ class StreamingEventHandler: TtsEventHandler {
     ) {
         self.startTime = startTime
         self.sampleRate = sampleRate
-        self.onComplete = onComplete
-        self.onError = onError
+        self.completionHandler = onComplete
+        self.errorHandler = onError
     }
 
     func onAudioChunk(chunk: AudioChunk) {
@@ -609,10 +612,10 @@ class StreamingEventHandler: TtsEventHandler {
             chunkCount: chunkCount
         )
 
-        onComplete(result)
+        completionHandler(result)
     }
 
     func onError(message: String) {
-        onError(message)
+        errorHandler(message)
     }
 }

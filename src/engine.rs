@@ -182,6 +182,69 @@ impl PocketTTSEngine {
         }
     }
 
+    /// Start true streaming synthesis with optimized TTFA
+    ///
+    /// Unlike `start_streaming` which chunks by tokens, this method:
+    /// 1. Tokenizes ALL text upfront
+    /// 2. Generates latents using streaming FlowLM
+    /// 3. Decodes and yields audio in small batches
+    ///
+    /// This achieves lower TTFA by avoiding token chunking overhead.
+    pub fn start_true_streaming(&self, text: String, handler: Box<dyn TTSEventHandler>) -> Result<(), PocketTTSError> {
+        // Reset cancellation flag
+        *self.is_cancelled.lock().unwrap() = false;
+
+        let mut model_guard = self
+            .model
+            .lock()
+            .map_err(|_| PocketTTSError::InferenceFailed("Lock error".into()))?;
+
+        let model = model_guard.as_mut().ok_or(PocketTTSError::ModelNotLoaded)?;
+
+        let sample_rate = model.sample_rate();
+        let is_cancelled = Arc::new(Mutex::new(false));
+        let is_cancelled_clone = is_cancelled.clone();
+
+        // True streaming synthesis with callback
+        let result = model.synthesize_true_streaming(&text, |samples, is_final| {
+            // Check cancellation
+            if *is_cancelled_clone.lock().unwrap() {
+                return false;
+            }
+
+            // Convert to bytes
+            let audio_bytes = audio::samples_to_bytes(samples);
+
+            // Create chunk
+            let chunk = AudioChunk {
+                audio_data: audio_bytes,
+                sample_rate,
+                is_final,
+            };
+
+            // Calculate progress (approximate)
+            let progress = if is_final { 1.0 } else { 0.5 };
+            handler.on_progress(progress);
+
+            // Send chunk
+            handler.on_audio_chunk(chunk);
+
+            if is_final {
+                handler.on_complete();
+            }
+
+            true // Continue
+        });
+
+        match result {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                handler.on_error(e.to_string());
+                Err(e)
+            },
+        }
+    }
+
     /// Cancel ongoing synthesis
     pub fn cancel(&self) {
         *self.is_cancelled.lock().unwrap() = true;
@@ -214,6 +277,53 @@ impl PocketTTSEngine {
                 model.clear_custom_voice();
             }
         }
+    }
+
+    /// Decode raw latents to audio (for reference testing)
+    ///
+    /// Takes raw f32 latent data and decodes it through Mimi.
+    /// The latents_data should be [num_frames * 32] f32 values as bytes.
+    pub fn decode_latents(&self, latents_data: Vec<u8>, num_frames: u32) -> Result<SynthesisResult, PocketTTSError> {
+        let mut model_guard = self
+            .model
+            .lock()
+            .map_err(|_| PocketTTSError::InferenceFailed("Lock error".into()))?;
+
+        let model = model_guard.as_mut().ok_or(PocketTTSError::ModelNotLoaded)?;
+
+        // Convert bytes to f32 samples
+        let expected_floats = (num_frames * 32) as usize;
+        let expected_bytes = expected_floats * 4;
+
+        if latents_data.len() != expected_bytes {
+            return Err(PocketTTSError::InferenceFailed(format!(
+                "Expected {} bytes for {} frames, got {}",
+                expected_bytes,
+                num_frames,
+                latents_data.len()
+            )));
+        }
+
+        // Convert bytes to f32 vec
+        let latents_f32: Vec<f32> = latents_data
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+
+        // Decode through Mimi
+        let samples = model.decode_latents(&latents_f32, num_frames as usize)?;
+
+        // Convert to WAV bytes
+        let wav_data = audio::samples_to_wav(&samples, model.sample_rate())?;
+
+        let duration = audio::duration_seconds(samples.len(), model.sample_rate());
+
+        Ok(SynthesisResult {
+            audio_data: wav_data,
+            sample_rate: model.sample_rate(),
+            channels: 1,
+            duration_seconds: duration,
+        })
     }
 
     /// Unload model to free memory

@@ -85,6 +85,7 @@ struct BenchConfig {
     model_dir: PathBuf,
     iterations: usize,
     streaming: bool,
+    true_streaming: bool,
     warmup: usize,
     json_output: Option<PathBuf>,
 }
@@ -102,7 +103,9 @@ fn main() {
     let model = load_model(&config.model_dir);
 
     // Run benchmarks
-    let results = if config.streaming {
+    let results = if config.true_streaming {
+        run_true_streaming_benchmarks(model, &config)
+    } else if config.streaming {
         run_streaming_benchmarks(model, &config)
     } else {
         run_sync_benchmarks(model, &config)
@@ -123,6 +126,7 @@ fn parse_args() -> BenchConfig {
         model_dir: PathBuf::from("./model"),
         iterations: 5,
         streaming: false,
+        true_streaming: false,
         warmup: 1,
         json_output: None,
     };
@@ -144,6 +148,9 @@ fn parse_args() -> BenchConfig {
             },
             "--streaming" | "-s" => {
                 config.streaming = true;
+            },
+            "--true-streaming" | "-t" => {
+                config.true_streaming = true;
             },
             "--warmup" | "-w" => {
                 if i + 1 < args.len() {
@@ -180,7 +187,8 @@ fn print_usage() {
     println!("\nOptions:");
     println!("  -m, --model-dir PATH   Path to model directory (default: ./model)");
     println!("  -n, --iterations N     Number of iterations per phrase (default: 5)");
-    println!("  -s, --streaming        Use streaming synthesis mode");
+    println!("  -s, --streaming        Use streaming synthesis mode (token-chunked)");
+    println!("  -t, --true-streaming   Use true streaming mode (optimized TTFA)");
     println!("  -w, --warmup N         Number of warmup iterations (default: 1)");
     println!("  -j, --json PATH        Save results to JSON file");
     println!("  -h, --help             Show this help message");
@@ -412,6 +420,132 @@ fn run_streaming_benchmarks(mut model: PocketTTSModel, config: &BenchConfig) -> 
     all_results
 }
 
+/// Run true streaming synthesis benchmarks with optimized TTFA measurement
+fn run_true_streaming_benchmarks(mut model: PocketTTSModel, config: &BenchConfig) -> Vec<LatencyResult> {
+    println!("Mode: True streaming synthesis (optimized TTFA)");
+    println!("Iterations: {} (warmup: {})\n", config.iterations, config.warmup);
+
+    let sample_rate = model.sample_rate();
+    let mut all_results = Vec::new();
+
+    for (phrase_type, text) in TEST_PHRASES {
+        println!("─── {} phrase: \"{}...\" ───", phrase_type, &text[..text.len().min(30)]);
+
+        let mut results = Vec::new();
+
+        // Warmup runs
+        for _ in 0..config.warmup {
+            let _ = model.synthesize_true_streaming(text, |_, _| true);
+        }
+
+        // Timed runs
+        for iteration in 0..config.iterations {
+            // Shared state for timing
+            let first_chunk_time = Arc::new(AtomicU64::new(0));
+            let first_chunk_recorded = Arc::new(AtomicBool::new(false));
+            let chunk_count = Arc::new(AtomicU64::new(0));
+            let total_samples = Arc::new(AtomicU64::new(0));
+            let first_chunk_samples = Arc::new(AtomicU64::new(0));
+            let chunk_times = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+            let first_chunk_time_clone = first_chunk_time.clone();
+            let first_chunk_recorded_clone = first_chunk_recorded.clone();
+            let chunk_count_clone = chunk_count.clone();
+            let total_samples_clone = total_samples.clone();
+            let first_chunk_samples_clone = first_chunk_samples.clone();
+            let chunk_times_clone = chunk_times.clone();
+
+            let start = Instant::now();
+
+            let result = model.synthesize_true_streaming(text, move |samples, _is_final| {
+                let now = start.elapsed().as_nanos() as u64;
+
+                // Record first chunk time (TTFA)
+                if !first_chunk_recorded_clone.swap(true, Ordering::SeqCst) {
+                    first_chunk_time_clone.store(now, Ordering::SeqCst);
+                    first_chunk_samples_clone.store(samples.len() as u64, Ordering::SeqCst);
+                }
+
+                // Track chunk timing
+                if let Ok(mut times) = chunk_times_clone.lock() {
+                    times.push(now);
+                }
+
+                chunk_count_clone.fetch_add(1, Ordering::SeqCst);
+                total_samples_clone.fetch_add(samples.len() as u64, Ordering::SeqCst);
+
+                true // Continue
+            });
+
+            let total_elapsed = start.elapsed();
+
+            if let Err(e) = result {
+                eprintln!("  Iteration {}: ERROR - {:?}", iteration + 1, e);
+                continue;
+            }
+
+            let ttfa_ns = first_chunk_time.load(Ordering::SeqCst);
+            let ttfa_ms = ttfa_ns as f64 / 1_000_000.0;
+            let total_ms = total_elapsed.as_secs_f64() * 1000.0;
+            let samples = total_samples.load(Ordering::SeqCst);
+            let audio_duration_ms = (samples as f64 / sample_rate as f64) * 1000.0;
+            let rtf = audio_duration_ms / total_ms;
+            let chunks = chunk_count.load(Ordering::SeqCst);
+
+            // Calculate average inter-chunk latency
+            let avg_chunk_latency = if chunks > 1 {
+                let times = chunk_times.lock().unwrap();
+                let mut deltas = Vec::new();
+                for i in 1..times.len() {
+                    deltas.push((times[i] - times[i - 1]) as f64 / 1_000_000.0);
+                }
+                deltas.iter().sum::<f64>() / deltas.len() as f64
+            } else {
+                total_ms
+            };
+
+            let result = LatencyResult {
+                phrase_type: phrase_type.to_string(),
+                text_length: text.len(),
+                token_count: 0,
+                ttfa_ms,
+                total_synthesis_ms: total_ms,
+                audio_duration_ms,
+                rtf,
+                chunk_count: chunks as usize,
+                avg_chunk_latency_ms: avg_chunk_latency,
+                first_chunk_samples: first_chunk_samples.load(Ordering::SeqCst) as usize,
+            };
+
+            println!(
+                "  Run {}: TTFA={:.1}ms, total={:.1}ms, {:.2}x RTF, {} chunks",
+                iteration + 1,
+                ttfa_ms,
+                total_ms,
+                rtf,
+                chunks
+            );
+
+            results.push(result);
+        }
+
+        // Compute averages
+        if !results.is_empty() {
+            let avg_ttfa = results.iter().map(|r| r.ttfa_ms).sum::<f64>() / results.len() as f64;
+            let avg_rtf = results.iter().map(|r| r.rtf).sum::<f64>() / results.len() as f64;
+            let avg_chunks = results.iter().map(|r| r.chunk_count).sum::<usize>() / results.len();
+            println!(
+                "  Average: TTFA={:.1}ms, {:.2}x RTF, {} chunks\n",
+                avg_ttfa, avg_rtf, avg_chunks
+            );
+        }
+
+        all_results.extend(results);
+    }
+
+    all_results
+}
+
 fn print_results(results: &[LatencyResult], config: &BenchConfig) {
     println!("\n╔══════════════════════════════════════════════════════════════╗");
     println!("║                    BENCHMARK SUMMARY                         ║");
@@ -441,7 +575,7 @@ fn print_results(results: &[LatencyResult], config: &BenchConfig) {
         println!("    Total:    {:.1}ms", avg_total);
         println!("    RTF:      {:.2}x", avg_rtf);
 
-        if config.streaming {
+        if config.streaming || config.true_streaming {
             let avg_chunks = phrase_results.iter().map(|r| r.chunk_count).sum::<usize>() / phrase_results.len();
             let avg_chunk_lat =
                 phrase_results.iter().map(|r| r.avg_chunk_latency_ms).sum::<f64>() / phrase_results.len() as f64;

@@ -1,3 +1,6 @@
+// Allow excessive precision for test reference values copied from Python
+#![allow(clippy::excessive_precision)]
+
 //! Local Mac test harness for Pocket TTS
 //!
 //! This binary tests the Rust/Candle implementation directly on Mac
@@ -177,6 +180,8 @@ fn main() {
     let mut json_report: Option<PathBuf> = None;
     let mut export_latents_path: Option<PathBuf> = None;
     let mut load_latents_path: Option<PathBuf> = None;
+    let mut test_convtr = false;
+    let mut test_mimi_trace = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -229,6 +234,12 @@ fn main() {
                     i += 1;
                 }
             },
+            "--test-convtr" => {
+                test_convtr = true;
+            },
+            "--test-mimi-trace" => {
+                test_mimi_trace = true;
+            },
             "--help" | "-h" => {
                 print_usage();
                 return;
@@ -243,7 +254,11 @@ fn main() {
     }
 
     // Run in validation mode, latent-load mode, or single-phrase mode
-    if let Some(latents_path) = load_latents_path {
+    if test_mimi_trace {
+        run_mimi_trace_test(&model_dir);
+    } else if test_convtr {
+        run_convtr_test(&model_dir);
+    } else if let Some(latents_path) = load_latents_path {
         run_mimi_from_latents(&model_dir, &latents_path, &output_path);
     } else if validation_mode {
         run_validation_mode(
@@ -662,6 +677,273 @@ fn run_mimi_from_latents(model_dir: &Path, latents_path: &Path, output_path: &Pa
             "Run validation/compare_mimi_outputs.py --rust-audio {} to compare",
             output_path.display()
         );
+    }
+}
+
+/// Trace Mimi pipeline and compare with Python intermediate values
+fn run_mimi_trace_test(model_dir: &Path) {
+    println!("=== MIMI PIPELINE TRACE TEST ===\n");
+
+    let device = Device::Cpu;
+    let model_path = model_dir.join("model.safetensors");
+
+    // Load weights
+    let vb = unsafe {
+        VarBuilder::from_mmaped_safetensors(&[&model_path], DType::F32, &device).expect("Failed to load weights")
+    };
+
+    // Load Python's input from /tmp/mimi_trace_input.f32
+    let input_path = Path::new("/tmp/mimi_trace_input.f32");
+    if !input_path.exists() {
+        eprintln!("ERROR: Run python3 /tmp/trace_mimi_pipeline.py first to generate test inputs");
+        std::process::exit(1);
+    }
+
+    let mut input_bytes = Vec::new();
+    File::open(input_path)
+        .expect("Failed to open input file")
+        .read_to_end(&mut input_bytes)
+        .expect("Failed to read input");
+
+    let input_f32: Vec<f32> = input_bytes
+        .chunks(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+    println!("Input len: {} (expected 128 = 1*4*32)", input_f32.len());
+
+    // Create input tensor [1, 4, 32]
+    let input = Tensor::from_vec(input_f32.clone(), (1, 4, 32), &device).expect("Failed to create input tensor");
+    println!("Input shape: {:?}", input.dims());
+    println!("Input [0, 0, :8]: {:?}", &input_f32[..8]);
+
+    // Step 1: Transpose to [1, 32, 4]
+    let x = input.permute((0, 2, 1)).expect("permute failed");
+    println!("\n1. After transpose: {:?}", x.dims());
+    let x_vec: Vec<f32> = x.flatten_all().unwrap().to_vec1().unwrap();
+    // First column (frame 0) is every 4th element
+    let frame0_vals: Vec<f32> = (0..8).map(|i| x_vec[i * 4]).collect();
+    println!("   [0, :8, 0]: {:?}", frame0_vals);
+
+    // Step 2: output_proj - Conv1d(32, 512, kernel=1)
+    let proj_weight = vb
+        .get((512, 32, 1), "mimi.quantizer.output_proj.weight")
+        .expect("get proj weight");
+    let proj_bias = vb.get(512, "mimi.quantizer.output_proj.bias").ok();
+    println!("\n2. output_proj weight: {:?}", proj_weight.shape());
+
+    let x2 = x.conv1d(&proj_weight, 0, 1, 1, 1).expect("conv1d failed");
+    let x2 = if let Some(bias) = &proj_bias {
+        let bias = bias.reshape((1, (), 1)).unwrap();
+        x2.broadcast_add(&bias).unwrap()
+    } else {
+        x2
+    };
+    println!("   After output_proj: {:?}", x2.dims());
+    let x2_vec: Vec<f32> = x2.flatten_all().unwrap().to_vec1().unwrap();
+    let x2_frame0: Vec<f32> = (0..8).map(|i| x2_vec[i * 4]).collect();
+    println!("   [0, :8, 0]: {:?}", x2_frame0);
+
+    // Python reference values
+    let python_proj: Vec<f32> = vec![
+        -0.13605336844921112,
+        1.7759066820144653,
+        1.2895563840866089,
+        0.6906523704528809,
+        1.609748125076294,
+        -0.5624573230743408,
+        -1.8276222944259644,
+        -0.5808132886886597,
+    ];
+    println!("   Python [0, :8, 0]: {:?}", python_proj);
+
+    let proj_max_diff: f32 = python_proj
+        .iter()
+        .zip(x2_frame0.iter())
+        .map(|(p, r)| (p - r).abs())
+        .fold(0.0f32, |a, b| a.max(b));
+    println!("   Max diff from Python: {:.6}", proj_max_diff);
+
+    // Step 3: upsample - ConvTranspose1d(512, 512, k=32, s=16, groups=512)
+    let upsample_weight = vb
+        .get((512, 1, 32), "mimi.upsample.convtr.convtr.weight")
+        .expect("get upsample weight");
+    let upsample_bias = vb.get(512, "mimi.upsample.convtr.convtr.bias").ok();
+    println!("\n3. upsample weight: {:?}", upsample_weight.shape());
+
+    let x3 = x2
+        .conv_transpose1d(&upsample_weight, 0, 0, 16, 1, 512)
+        .expect("conv_transpose1d failed");
+    let x3 = if let Some(bias) = &upsample_bias {
+        let bias = bias.reshape((1, (), 1)).unwrap();
+        x3.broadcast_add(&bias).unwrap()
+    } else {
+        x3
+    };
+    println!("   After upsample (raw): {:?}", x3.dims());
+
+    let x3_vec: Vec<f32> = x3.flatten_all().unwrap().to_vec1().unwrap();
+    // x3 is [1, 512, 80], get first 8 channels at frame 0
+    let x3_ch_frame0: Vec<f32> = (0..8).map(|i| x3_vec[i * 80]).collect();
+    println!("   [0, :8, 0]: {:?}", x3_ch_frame0);
+    // Also get first 8 time steps of channel 0
+    let x3_ch0_time: Vec<f32> = (0..8).map(|i| x3_vec[i]).collect();
+    println!("   [0, 0, :8]: {:?}", x3_ch0_time);
+
+    // Python reference
+    let python_upsample_ch: Vec<f32> = vec![
+        -0.039062198251485825,
+        0.2705482840538025,
+        -0.2027525156736374,
+        -0.059690169990062714,
+        0.21379467844963074,
+        -0.0829404816031456,
+        1.0637333393096924,
+        0.10720089077949524,
+    ];
+    let python_upsample_time: Vec<f32> = vec![
+        -0.039062198251485825,
+        -0.03773355111479759,
+        -0.034544799476861954,
+        -0.03268469497561455,
+        -0.033349018543958664,
+        -0.026838652789592743,
+        -0.02790156938135624,
+        -0.025377141311764717,
+    ];
+    println!("   Python [0, :8, 0]: {:?}", python_upsample_ch);
+    println!("   Python [0, 0, :8]: {:?}", python_upsample_time);
+
+    let upsample_ch_diff: f32 = python_upsample_ch
+        .iter()
+        .zip(x3_ch_frame0.iter())
+        .map(|(p, r)| (p - r).abs())
+        .fold(0.0f32, |a, b| a.max(b));
+    let upsample_time_diff: f32 = python_upsample_time
+        .iter()
+        .zip(x3_ch0_time.iter())
+        .map(|(p, r)| (p - r).abs())
+        .fold(0.0f32, |a, b| a.max(b));
+    println!("\n   Max diff channels: {:.6}", upsample_ch_diff);
+    println!("   Max diff time: {:.6}", upsample_time_diff);
+
+    if proj_max_diff < 1e-4 && upsample_ch_diff < 1e-4 && upsample_time_diff < 1e-4 {
+        println!("\nPASS: Pipeline matches Python through upsample!");
+    } else {
+        println!("\nFAIL: Discrepancy detected");
+        if proj_max_diff >= 1e-4 {
+            println!("  - output_proj differs");
+        }
+        if upsample_ch_diff >= 1e-4 || upsample_time_diff >= 1e-4 {
+            println!("  - upsample differs");
+        }
+    }
+}
+
+/// Test conv_transpose against Python reference
+fn run_convtr_test(model_dir: &Path) {
+    println!("=== CONV_TRANSPOSE TEST ===\n");
+
+    let device = Device::Cpu;
+    let model_path = model_dir.join("model.safetensors");
+
+    // Load weights
+    let vb = unsafe {
+        VarBuilder::from_mmaped_safetensors(&[&model_path], DType::F32, &device).expect("Failed to load weights")
+    };
+
+    // Get first upsample weights [512, 1, 32] depthwise ConvTranspose
+    let weight = vb
+        .get((512, 1, 32), "mimi.upsample.convtr.convtr.weight")
+        .expect("Failed to get weight");
+    println!("Weight shape: {:?}", weight.shape());
+
+    // Load Python's input from /tmp/convtr_input.f32
+    let input_path = Path::new("/tmp/convtr_input.f32");
+    if !input_path.exists() {
+        eprintln!("ERROR: Run python3 /tmp/test_convtr_basic.py first to generate test inputs");
+        std::process::exit(1);
+    }
+
+    let mut input_bytes = Vec::new();
+    File::open(input_path)
+        .expect("Failed to open input file")
+        .read_to_end(&mut input_bytes)
+        .expect("Failed to read input");
+
+    let input_f32: Vec<f32> = input_bytes
+        .chunks(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+    println!("Input len: {} (expected 512)", input_f32.len());
+    println!("Input first 5: {:?}", &input_f32[..5]);
+
+    // Create input tensor [1, 512, 1]
+    let input = Tensor::from_vec(input_f32, (1, 512, 1), &device).expect("Failed to create input tensor");
+
+    // Raw conv_transpose with groups=512 (depthwise)
+    // kernel_size=32, stride=16
+    let output = input
+        .conv_transpose1d(
+            &weight, 0,   // padding
+            0,   // output_padding
+            16,  // stride
+            1,   // dilation
+            512, // groups
+        )
+        .expect("Failed to run conv_transpose");
+
+    println!("Output shape: {:?}", output.shape());
+
+    // Get channel 0 output
+    let out_ch0 = output.narrow(1, 0, 1).unwrap().squeeze(0).unwrap().squeeze(0).unwrap();
+    let out_vals: Vec<f32> = out_ch0.to_vec1().unwrap();
+    println!("Rust channel 0, first 16: {:?}", &out_vals[..16]);
+
+    // Python reference values (from test_convtr_basic.py output)
+    let python_first_16: Vec<f32> = vec![
+        0.5532353520393372,
+        0.5344178676605225,
+        0.48925578594207764,
+        0.4629112184047699,
+        0.47231999039649963,
+        0.3801141083240509,
+        0.39516812562942505,
+        0.35941481590270996,
+        0.3349520266056061,
+        0.23615999519824982,
+        0.227692112326622,
+        0.13360446691513062,
+        0.06915441900491714,
+        0.04939601570367813,
+        0.07809274643659592,
+        0.07291793078184128,
+    ];
+
+    println!("\n=== Comparison ===");
+    println!("Python first 5: {:?}", &python_first_16[..5]);
+    println!("Rust first 5:   {:?}", &out_vals[..5]);
+
+    // Calculate max difference
+    let max_diff: f32 = python_first_16
+        .iter()
+        .zip(out_vals.iter())
+        .map(|(p, r)| (p - r).abs())
+        .fold(0.0f32, |a, b| a.max(b));
+
+    println!("\nMax diff: {:.6}", max_diff);
+
+    if max_diff < 1e-4 {
+        println!("PASS: Raw conv_transpose matches Python!");
+    } else {
+        println!("FAIL: Output differs from Python");
+
+        // Calculate ratios
+        println!("\nRatios (Rust/Python):");
+        for i in 0..8 {
+            if python_first_16[i].abs() > 1e-6 {
+                println!("  [{}]: {:.4}", i, out_vals[i] / python_first_16[i]);
+            }
+        }
     }
 }
 
