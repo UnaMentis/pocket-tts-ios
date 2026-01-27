@@ -20,6 +20,17 @@ use crate::modules::{
     rotary::RotaryEmbedding,
 };
 
+/// Control flow for streaming latent generation
+///
+/// Returned by the callback to indicate whether generation should continue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LatentStreamControl {
+    /// Continue generating the next latent
+    Continue,
+    /// Stop generation early (e.g., user cancelled)
+    Stop,
+}
+
 /// FlowLM configuration
 #[derive(Debug, Clone)]
 pub struct FlowLMConfig {
@@ -607,6 +618,121 @@ impl FlowLM {
         Ok(latents)
     }
 
+    /// Generate latents autoregressively with streaming callback
+    ///
+    /// Same as `generate_latents()` but invokes a callback for each latent
+    /// as it's generated. This enables low TTFA (Time To First Audio) by
+    /// allowing the Mimi decoder to start processing immediately.
+    ///
+    /// The callback receives:
+    /// - `latent`: The normalized latent tensor [1, 1, 32]
+    /// - `step`: The generation step (0-indexed)
+    /// - `is_eos`: Whether EOS was detected at this step
+    ///
+    /// Returns `LatentStreamControl::Stop` from the callback to terminate early.
+    pub fn generate_latents_streaming<F>(
+        &mut self,
+        token_ids: &Tensor,
+        voice_embedding: Option<&VoiceEmbedding>,
+        num_flow_steps: usize,
+        temperature: f32,
+        mut callback: F,
+    ) -> Result<Tensor>
+    where
+        F: FnMut(&Tensor, usize, bool) -> LatentStreamControl,
+    {
+        // Reset caches before generation
+        self.reset_cache();
+
+        let text_embeddings = self.text_embedding.forward(token_ids)?;
+        let (batch_size, _seq_len, _hidden_dim) = text_embeddings.dims3()?;
+
+        // Phase 1: Process voice embeddings FIRST (if provided)
+        if let Some(voice) = voice_embedding {
+            let voice_emb = voice.embedding().unsqueeze(0)?;
+            let voice_emb = voice_emb.broadcast_as((batch_size, voice_emb.dim(1)?, voice_emb.dim(2)?))?;
+
+            let mut hidden = voice_emb;
+            for (i, layer) in self.layers.iter().enumerate() {
+                hidden = layer.forward(&hidden, &self.rotary, Some(&mut self.kv_caches[i]))?;
+            }
+            let _ = self.final_norm.forward(&hidden)?;
+        }
+
+        // Phase 2: Process text embeddings (appends to KV cache)
+        let mut hidden = text_embeddings;
+        for (i, layer) in self.layers.iter().enumerate() {
+            hidden = layer.forward(&hidden, &self.rotary, Some(&mut self.kv_caches[i]))?;
+        }
+        let _ = self.final_norm.forward(&hidden)?;
+
+        // Phase 3: Autoregressive latent generation with streaming
+        let num_words = token_ids.dim(1)?;
+        let max_gen_len = (num_words as f32 * 5.0 + 30.0) as usize;
+
+        let eos_threshold = -4.0;
+        let num_text_tokens = token_ids.dim(1)?;
+        let frames_after_eos = std::cmp::min(5, (num_text_tokens + 3) / 4);
+        let min_gen_steps = 3;
+
+        let mut all_latents: Vec<Tensor> = Vec::new();
+        let mut eos_step: Option<usize> = None;
+        let mut current_latent = self.bos_emb.clone().unsqueeze(0)?.unsqueeze(0)?;
+
+        for step in 0..max_gen_len {
+            // Project latent to hidden dimension
+            let latent_hidden = self.input_linear.forward(&current_latent)?;
+
+            // Run through transformer (using KV cache)
+            let mut step_hidden = latent_hidden;
+            for (i, layer) in self.layers.iter().enumerate() {
+                step_hidden = layer.forward(&step_hidden, &self.rotary, Some(&mut self.kv_caches[i]))?;
+            }
+            let step_hidden = self.final_norm.forward(&step_hidden)?;
+            let last_hidden = step_hidden.squeeze(1)?;
+
+            // Check EOS prediction
+            let eos_logit = self.out_eos.forward(&last_hidden)?;
+            let eos_val: f32 = eos_logit.squeeze(1)?.to_vec1::<f32>()?[0];
+
+            let is_eos = step >= min_gen_steps && eos_val > eos_threshold && eos_step.is_none();
+            if is_eos {
+                eos_step = Some(step);
+            }
+
+            // Generate next latent via FlowNet
+            let cond = last_hidden.unsqueeze(1)?;
+            let next_normalized = self.flow_net.generate(&cond, num_flow_steps, temperature, &self.device)?;
+
+            // *** STREAMING CALLBACK: Yield latent immediately ***
+            let control = callback(&next_normalized, step, is_eos);
+
+            // Store for final return
+            all_latents.push(next_normalized.clone());
+
+            // Check early termination from callback
+            if control == LatentStreamControl::Stop {
+                break;
+            }
+
+            // Check EOS-based termination
+            if let Some(eos) = eos_step {
+                if step >= eos + frames_after_eos {
+                    break;
+                }
+            }
+
+            current_latent = next_normalized;
+        }
+
+        // Return all latents (even if terminated early)
+        if all_latents.is_empty() {
+            return Err(candle_core::Error::Msg("No latents generated".to_string()));
+        }
+
+        Tensor::cat(&all_latents, 1)
+    }
+
     /// Reset KV caches for new sequence
     pub fn reset_cache(&mut self) {
         for cache in &mut self.kv_caches {
@@ -627,5 +753,15 @@ impl FlowLM {
 
     pub fn config(&self) -> &FlowLMConfig {
         &self.config
+    }
+
+    /// Get the embedding mean for denormalization
+    pub fn emb_mean(&self) -> &Tensor {
+        &self.emb_mean
+    }
+
+    /// Get the embedding std for denormalization
+    pub fn emb_std(&self) -> &Tensor {
+        &self.emb_std
     }
 }

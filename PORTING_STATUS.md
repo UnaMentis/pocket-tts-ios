@@ -1272,3 +1272,123 @@ let mut current = Tensor::randn(0f32, std, ...);
 
 ### Files Modified This Session
 - `src/modules/flownet.rs` - Enabled random noise with temperature-scaled std
+
+---
+
+## Session 2026-01-27: iOS AB Testing Infrastructure
+
+### Summary
+Added comprehensive reference testing capability directly into the iOS demo app to enable rigorous audio quality validation on-device. This addresses the gap between command-line testing (high correlation) and real iOS app behavior.
+
+### Problem Statement
+Despite local testing showing 0.9999 correlation between Rust and Python Mimi outputs, users reported audio corruption issues in the iOS app. The gap between command-line testing and iOS app testing needed to be closed.
+
+### Solution: iOS AB Testing Infrastructure
+
+#### Components Added
+
+1. **Reference Audio Generation** (`validation/generate_reference_audio.py`)
+   - Python script using the same Mimi decoder implementation
+   - Generates reference audio from deterministic latents (seed=42)
+   - Creates both `.wav` audio files and `.f32` latent files for direct comparison
+   - Three test phrases: short, medium, long
+
+2. **decode_latents API** (UniFFI exposed)
+   - New method added to `PocketTTSEngine` interface
+   - Takes raw f32 latent bytes and frame count
+   - Decodes through Mimi without FlowLM generation
+   - Enables apples-to-apples comparison using same latent inputs
+
+3. **ReferenceTestView.swift**
+   - Full AB testing UI for iOS app
+   - Loads reference audio/latents from app bundle
+   - Generates audio from same latents using Rust Mimi
+   - Computes Pearson correlation between reference and generated
+   - Provides playback controls for both audio streams
+
+4. **TabView Integration**
+   - iOS demo now has two tabs: "Synthesize" and "AB Test"
+   - Seamlessly switch between normal TTS and reference testing
+
+### Files Created
+
+| File | Purpose |
+|------|---------|
+| `validation/generate_reference_audio.py` | Python script to generate reference audio |
+| `tests/ios-harness/PocketTTSDemo/PocketTTSDemo/ReferenceTestView.swift` | AB testing UI |
+| `tests/ios-harness/PocketTTSDemo/PocketTTSDemo/ReferenceAudio/manifest.json` | Reference file manifest |
+| `tests/ios-harness/PocketTTSDemo/PocketTTSDemo/ReferenceAudio/reference_short.wav` | Short phrase reference audio |
+| `tests/ios-harness/PocketTTSDemo/PocketTTSDemo/ReferenceAudio/reference_short_latents.f32` | Short phrase latents |
+| `tests/ios-harness/PocketTTSDemo/PocketTTSDemo/ReferenceAudio/reference_medium.wav` | Medium phrase reference audio |
+| `tests/ios-harness/PocketTTSDemo/PocketTTSDemo/ReferenceAudio/reference_medium_latents.f32` | Medium phrase latents |
+| `tests/ios-harness/PocketTTSDemo/PocketTTSDemo/ReferenceAudio/reference_long.wav` | Long phrase reference audio |
+| `tests/ios-harness/PocketTTSDemo/PocketTTSDemo/ReferenceAudio/reference_long_latents.f32` | Long phrase latents |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `src/pocket_tts.udl` | Added `decode_latents` method to UniFFI interface |
+| `src/engine.rs` | Implemented `decode_latents` method |
+| `src/models/pocket_tts.rs` | Added `decode_latents` to model, removed unused import |
+| `tests/ios-harness/PocketTTSDemo/PocketTTSDemo/ContentView.swift` | Added TabView with AB Test tab |
+| `tests/ios-harness/PocketTTSDemo/PocketTTSDemo/TTSViewModel.swift` | Exposed engine property as `@Published` |
+| `CLAUDE.md` | Added post-implementation testing requirement |
+
+### Reference Test Phrases
+
+| ID | Text | Purpose |
+|----|------|---------|
+| short | "Hello world." | Quick testing |
+| medium | "The quick brown fox jumps over the lazy dog." | All letters |
+| long | "This is a longer test sentence to verify that the text to speech system handles extended input correctly and produces natural sounding audio." | Extended testing |
+
+### Usage
+
+1. Build iOS XCFramework: `./scripts/build-ios.sh`
+2. Open Xcode: `open tests/ios-harness/PocketTTSDemo/PocketTTSDemo.xcodeproj`
+3. Run on device/simulator
+4. Navigate to "AB Test" tab
+5. Select a reference phrase
+6. Tap "Generate from Latents" to create Rust output
+7. Compare correlation and listen to both audio streams
+
+### Verification Workflow
+
+The AB testing infrastructure enables this verification workflow:
+
+```
+Reference Audio (Python Mimi) ──┐
+                                ├─→ Pearson Correlation
+Generated Audio (Rust Mimi)  ───┘
+
+Same Latents → Different Decoders → Compare Outputs
+```
+
+If correlation is high (>0.95), the Rust Mimi decoder matches Python.
+If correlation is low, investigate Mimi decoder implementation.
+
+### Post-Implementation Testing Requirement
+
+Added to CLAUDE.md:
+
+> **HARD REQUIREMENT: After making ANY changes to model implementation code (`src/models/` or `src/modules/`), Claude MUST:**
+> 1. Do a clean build: `cargo clean && ./scripts/build-ios.sh`
+> 2. Open the iOS demo in Xcode: `open tests/ios-harness/PocketTTSDemo/PocketTTSDemo.xcodeproj`
+> 3. Leave the demo running and ready for manual user testing
+
+### Current State
+
+| Component | Status |
+|-----------|--------|
+| iOS AB Testing UI | ✅ Implemented |
+| decode_latents API | ✅ Exposed via UniFFI |
+| Reference Audio Files | ✅ Generated (3 phrases) |
+| XCFramework Build | ✅ Successful |
+| Xcode Project | ✅ Updated and ready |
+
+### Note for Testing
+
+The reference audio files need to be added to the Xcode project's bundle resources to be included in the app. When the user opens Xcode, they may need to:
+1. Select the ReferenceAudio folder in Project Navigator
+2. Ensure "Target Membership" includes PocketTTSDemo

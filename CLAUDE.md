@@ -145,6 +145,95 @@ After building the XCFramework:
 
 See `rust/pocket-tts-ios/README.md` for detailed integration instructions.
 
+## Post-Implementation Testing Requirement
+
+**HARD REQUIREMENT: After making ANY changes to model implementation code (`src/models/` or `src/modules/`), Claude MUST:**
+
+1. Do a clean build: `cargo clean && ./scripts/build-ios.sh`
+2. Copy updated XCFramework and Swift bindings to iOS demo project
+3. Clear Xcode derived data: `rm -rf ~/Library/Developer/Xcode/DerivedData/PocketTTSDemo-*`
+4. Build, install, and launch the app on simulator
+5. Take a screenshot to verify the new features are working
+6. Leave the demo running and ready for manual user testing
+
+This ensures the user can immediately test changes in the real iOS environment. Do NOT consider implementation work complete until the iOS demo is built and running with visual verification.
+
+## Xcode Project Management
+
+**Claude has FULL responsibility for managing the Xcode project.** Never tell the user "you may need to add files to Xcode" - that is Claude's job.
+
+### Responsibilities
+
+1. **Adding files to Xcode project** - When creating new Swift files or resource folders, Claude MUST:
+   - Edit `project.pbxproj` directly to add file references
+   - Add files to appropriate PBXGroup sections
+   - Add source files to PBXSourcesBuildPhase
+   - Add resources to PBXResourcesBuildPhase
+   - Use unique 24-character hex IDs for new entries
+
+2. **Clearing build caches** - Before rebuilding:
+   - Clear derived data: `rm -rf ~/Library/Developer/Xcode/DerivedData/PocketTTSDemo-*`
+   - Clean project: `xcodebuild clean -scheme PocketTTSDemo -quiet`
+
+3. **Copying updated frameworks** - After building XCFramework:
+   ```bash
+   rm -rf tests/ios-harness/PocketTTSDemo/Frameworks/PocketTTS.xcframework
+   cp -R target/xcframework/PocketTTS.xcframework tests/ios-harness/PocketTTSDemo/Frameworks/
+   cp target/xcframework/pocket_tts_ios.swift tests/ios-harness/PocketTTSDemo/PocketTTSDemo/
+   ```
+
+4. **Building and running** - Full verification flow:
+   ```bash
+   # Build for simulator
+   xcodebuild -scheme PocketTTSDemo -destination 'platform=iOS Simulator,id=<UDID>' build
+
+   # Install on simulator
+   xcrun simctl install <UDID> ~/Library/Developer/Xcode/DerivedData/PocketTTSDemo-*/Build/Products/Debug-iphonesimulator/PocketTTSDemo.app
+
+   # Launch app
+   xcrun simctl launch <UDID> com.unamentis.PocketTTSDemo
+   ```
+
+5. **Visual verification** - Always take a screenshot to confirm:
+   - App launched successfully
+   - New features are visible and functional
+   - No build errors or crashes
+
+### Project File Structure (project.pbxproj)
+
+When adding new files, update these sections:
+
+1. **PBXBuildFile** - Build file entries linking file refs to build phases
+2. **PBXFileReference** - File path and type declarations
+3. **PBXGroup** - Folder structure in Xcode navigator
+4. **PBXSourcesBuildPhase** - Swift files to compile
+5. **PBXResourcesBuildPhase** - Resources to bundle
+
+### Example: Adding a New Swift File
+
+```
+// In PBXBuildFile section:
+AB1234567890ABCD12345678 /* NewFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD1234567890ABCD12345678 /* NewFile.swift */; };
+
+// In PBXFileReference section:
+CD1234567890ABCD12345678 /* NewFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewFile.swift; sourceTree = "<group>"; };
+
+// In PBXGroup (PocketTTSDemo group):
+CD1234567890ABCD12345678 /* NewFile.swift */,
+
+// In PBXSourcesBuildPhase:
+AB1234567890ABCD12345678 /* NewFile.swift in Sources */,
+```
+
+### iOS Demo Location
+
+The iOS demo project is at: `tests/ios-harness/PocketTTSDemo/`
+
+Key files:
+- `PocketTTSDemo.xcodeproj/project.pbxproj` - Project configuration
+- `PocketTTSDemo/` - Source files and resources
+- `Frameworks/` - PocketTTS.xcframework location
+
 ## Git Policy
 
 **IMPORTANT: Claude MUST NOT run `git commit` or `git push` without explicit user permission.**

@@ -3,7 +3,7 @@
 use thiserror::Error;
 
 /// Errors that can occur during TTS operations
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum PocketTTSError {
     #[error("Model not loaded")]
     ModelNotLoaded,

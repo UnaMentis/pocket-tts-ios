@@ -1,0 +1,10 @@
+framework module PocketTTS {
+    umbrella header "PocketTTS.h"
+    export *
+    module * { export * }
+}
+
+module pocket_tts_iosFFI {
+    header "pocket_tts_iosFFI.h"
+    export *
+}

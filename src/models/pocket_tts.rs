@@ -12,7 +12,7 @@ use std::path::Path;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 
-use super::flowlm::{FlowLM, FlowLMConfig};
+use super::flowlm::{FlowLM, FlowLMConfig, LatentStreamControl};
 use super::mimi::{MimiConfig, MimiDecoder};
 use crate::config::TTSConfig;
 use crate::error::PocketTTSError;
@@ -158,11 +158,13 @@ impl PocketTTSModel {
             .denormalize_latents(&latents)
             .map_err(|e| PocketTTSError::InferenceFailed(format!("Denormalize: {}", e)))?;
 
-        // Decode to audio using TRUE streaming mode with KV cache
-        eprintln!("[PocketTTS] decoding with Mimi (true streaming with KV cache)...");
+        // Decode to audio using streaming mode with batch transformer
+        // IMPORTANT: The decoder transformer uses NON-CAUSAL attention, so it must
+        // process the full sequence at once (not frame-by-frame with KV cache)
+        eprintln!("[PocketTTS] decoding with Mimi (batch transformer, streaming SEANet)...");
         let audio = self
             .mimi
-            .forward_true_streaming(&latents)
+            .forward_streaming(&latents)
             .map_err(|e| PocketTTSError::InferenceFailed(format!("Mimi: {}", e)))?;
         eprintln!("[PocketTTS] audio tensor shape: {:?}", audio.dims());
 
@@ -255,6 +257,215 @@ impl PocketTTSModel {
         Ok(())
     }
 
+    /// True streaming synthesis - yields audio as soon as possible
+    ///
+    /// Unlike `synthesize_streaming` which chunks by tokens, this method:
+    /// 1. Tokenizes ALL text upfront
+    /// 2. Generates latents one at a time (streaming FlowLM)
+    /// 3. Decodes and yields audio in small batches DURING generation
+    ///
+    /// This achieves minimum TTFA by starting audio output as soon as
+    /// the first batch of latents is generated.
+    ///
+    /// The callback receives:
+    /// - `samples`: Audio samples for this chunk
+    /// - `is_final`: Whether this is the last chunk
+    ///
+    /// Returns `false` from the callback to stop early.
+    pub fn synthesize_true_streaming<F>(
+        &mut self,
+        text: &str,
+        mut chunk_callback: F,
+    ) -> std::result::Result<(), PocketTTSError>
+    where
+        F: FnMut(&[f32], bool) -> bool,
+    {
+        use std::cell::RefCell;
+
+        // Tokenize ALL text upfront (not chunked)
+        let token_ids = self.tokenizer.encode(text)?;
+
+        // Create tensor for all tokens
+        let token_tensor = Tensor::from_vec(
+            token_ids.iter().map(|&id| id as i64).collect::<Vec<_>>(),
+            (1, token_ids.len()),
+            &self.device,
+        )
+        .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
+
+        // Get voice embedding
+        let voice = if let Some(ref custom) = self.custom_voice {
+            Some(custom)
+        } else {
+            self.voice_bank.get(self.config.voice_index as usize)
+        };
+
+        // Pre-extract normalization tensors (to avoid borrowing self.flowlm in callback)
+        let emb_mean = self.flowlm.emb_mean().clone();
+        let emb_std = self.flowlm.emb_std().clone();
+
+        // Reset caches for new sequence
+        self.flowlm.reset_cache();
+        self.mimi.reset_decoder_cache();
+
+        let num_flow_steps = self.config.consistency_steps.max(1) as usize;
+
+        // Decode batch size - how many latents to accumulate before decoding
+        // Smaller = lower TTFA, larger = more efficient
+        // 4 latents ≈ 320ms of audio, good balance for TTFA
+        let decode_batch_size = 4;
+
+        // Initialize persistent Mimi streaming state ONCE before streaming starts.
+        // This state MUST persist across ALL decode batches for proper overlap-add.
+        // Per Python reference: streaming ConvTranspose1d maintains partial buffers
+        // that accumulate overlapping output contributions between frames.
+        let mimi_state = self
+            .mimi
+            .init_streaming_state(1, &self.device)
+            .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
+        let mimi_state = RefCell::new(mimi_state);
+
+        // SAFETY: We use raw pointer to access mimi from within the callback.
+        // This is safe because:
+        // 1. flowlm and mimi are separate fields with no shared state
+        // 2. flowlm is borrowed mutably for generate_latents_streaming
+        // 3. mimi is accessed mutably in the callback
+        // 4. These are non-overlapping borrows of different struct fields
+        // Rust's borrow checker can't prove this is safe, but we know it is.
+        let mimi_ptr = &mut self.mimi as *mut MimiDecoder;
+
+        // State for the callback
+        let current_batch: RefCell<Vec<Tensor>> = RefCell::new(Vec::new());
+        let should_continue = RefCell::new(true);
+        let callback_error: RefCell<Option<PocketTTSError>> = RefCell::new(None);
+
+        // For crossfade smoothing at chunk boundaries (backup safety net)
+        let crossfade_samples = 480; // 20ms at 24kHz
+        let previous_chunk_tail: RefCell<Option<Vec<f32>>> = RefCell::new(None);
+
+        // Generate latents with streaming callback that decodes INLINE
+        let result = self.flowlm.generate_latents_streaming(
+            &token_tensor,
+            voice,
+            num_flow_steps,
+            self.config.temperature,
+            |latent: &Tensor, _step: usize, is_eos: bool| {
+                if !*should_continue.borrow() {
+                    return LatentStreamControl::Stop;
+                }
+
+                // Add latent to current batch
+                current_batch.borrow_mut().push(latent.clone());
+
+                // Decode when batch is full or at EOS
+                let batch_ready = current_batch.borrow().len() >= decode_batch_size || is_eos;
+
+                if batch_ready && !current_batch.borrow().is_empty() {
+                    let batch: Vec<Tensor> = current_batch.borrow_mut().drain(..).collect();
+
+                    // Concatenate batch latents: [1, n, 32]
+                    let latents_batch = match Tensor::cat(&batch, 1) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            *callback_error.borrow_mut() = Some(PocketTTSError::InferenceFailed(e.to_string()));
+                            *should_continue.borrow_mut() = false;
+                            return LatentStreamControl::Stop;
+                        },
+                    };
+
+                    // Denormalize latents before Mimi
+                    let denormalized =
+                        match latents_batch.broadcast_mul(&emb_std).and_then(|t| t.broadcast_add(&emb_mean)) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                *callback_error.borrow_mut() = Some(PocketTTSError::InferenceFailed(e.to_string()));
+                                *should_continue.borrow_mut() = false;
+                                return LatentStreamControl::Stop;
+                            },
+                        };
+
+                    // SAFETY: Access mimi through raw pointer - see safety comment above
+                    let mimi = unsafe { &mut *mimi_ptr };
+
+                    // Decode using TRUE streaming with persistent state
+                    // This maintains ConvTranspose1d partial buffers across batches
+                    let audio = match mimi.forward_streaming_stateful(&denormalized, &mut mimi_state.borrow_mut()) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            *callback_error.borrow_mut() = Some(PocketTTSError::InferenceFailed(e.to_string()));
+                            *should_continue.borrow_mut() = false;
+                            return LatentStreamControl::Stop;
+                        },
+                    };
+
+                    // Extract samples
+                    let mut audio_vec: Vec<f32> = match audio.squeeze(0).and_then(|a| a.to_vec1()) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            *callback_error.borrow_mut() = Some(PocketTTSError::InferenceFailed(e.to_string()));
+                            *should_continue.borrow_mut() = false;
+                            return LatentStreamControl::Stop;
+                        },
+                    };
+
+                    // Apply crossfade with previous chunk's tail as safety net
+                    let mut prev_tail = previous_chunk_tail.borrow_mut();
+                    if let Some(ref tail) = *prev_tail {
+                        let fade_len = crossfade_samples.min(tail.len()).min(audio_vec.len());
+                        if fade_len > 0 {
+                            for i in 0..fade_len {
+                                let fade_out = 1.0 - (i as f32 / fade_len as f32);
+                                let fade_in = i as f32 / fade_len as f32;
+                                audio_vec[i] = tail[i] * fade_out + audio_vec[i] * fade_in;
+                            }
+                        }
+                    }
+
+                    // Save tail for next chunk's crossfade
+                    if audio_vec.len() > crossfade_samples {
+                        *prev_tail = Some(audio_vec[audio_vec.len() - crossfade_samples..].to_vec());
+                        // Trim the tail off current chunk (it will be blended into next)
+                        audio_vec.truncate(audio_vec.len() - crossfade_samples);
+                    } else {
+                        *prev_tail = None;
+                    }
+                    drop(prev_tail);
+
+                    // Callback with audio chunk
+                    if !audio_vec.is_empty() && !chunk_callback(&audio_vec, is_eos) {
+                        *should_continue.borrow_mut() = false;
+                        return LatentStreamControl::Stop;
+                    }
+
+                    // On final chunk, flush the remaining tail
+                    if is_eos {
+                        if let Some(tail) = previous_chunk_tail.borrow_mut().take() {
+                            if !tail.is_empty() {
+                                chunk_callback(&tail, true);
+                            }
+                        }
+                    }
+                }
+
+                if is_eos {
+                    LatentStreamControl::Stop
+                } else {
+                    LatentStreamControl::Continue
+                }
+            },
+        );
+
+        // Check for callback errors
+        if let Some(err) = callback_error.into_inner() {
+            return Err(err);
+        }
+
+        // Handle FlowLM errors
+        result.map_err(|e| PocketTTSError::InferenceFailed(format!("FlowLM streaming: {}", e)))?;
+
+        Ok(())
+    }
+
     /// Get sample rate
     pub fn sample_rate(&self) -> u32 {
         self.mimi.sample_rate() as u32
@@ -268,6 +479,51 @@ impl PocketTTSModel {
     /// Get model version
     pub fn version(&self) -> &str {
         "1.0.2"
+    }
+
+    /// Decode raw latents to audio (for reference testing)
+    ///
+    /// Takes raw f32 latent data (already denormalized) and decodes it through Mimi.
+    /// The latents should be [num_frames, 32] f32 values.
+    ///
+    /// Note: The latents are NOT denormalized here - they should already be
+    /// in the denormalized form (matching Python's mimi_decoding_input).
+    pub fn decode_latents(&mut self, latents_f32: &[f32], num_frames: usize) -> std::result::Result<Vec<f32>, PocketTTSError> {
+        let latent_dim = 32;
+        let expected_len = num_frames * latent_dim;
+
+        if latents_f32.len() != expected_len {
+            return Err(PocketTTSError::InferenceFailed(format!(
+                "Expected {} floats for {} frames, got {}",
+                expected_len,
+                num_frames,
+                latents_f32.len()
+            )));
+        }
+
+        // Create tensor [1, num_frames, 32]
+        let latents = Tensor::from_vec(
+            latents_f32.to_vec(),
+            (1, num_frames, latent_dim),
+            &self.device,
+        )
+        .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
+
+        eprintln!("[PocketTTS] decode_latents: input shape {:?}", latents.dims());
+
+        // Decode with Mimi (batch transformer, streaming SEANet)
+        let audio = self
+            .mimi
+            .forward_streaming(&latents)
+            .map_err(|e| PocketTTSError::InferenceFailed(format!("Mimi decode: {}", e)))?;
+
+        // Convert to Vec<f32>
+        let audio = audio.squeeze(0).map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
+        let audio_vec: Vec<f32> = audio.to_vec1().map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
+
+        eprintln!("[PocketTTS] decode_latents: output {} samples", audio_vec.len());
+
+        Ok(audio_vec)
     }
 
     /// Synthesize text to audio, also returning raw latents for debugging

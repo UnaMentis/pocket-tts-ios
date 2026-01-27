@@ -3,8 +3,39 @@ import AVFoundation
 
 struct ContentView: View {
     @StateObject private var viewModel = TTSViewModel()
+    @StateObject private var referenceTestVM = ReferenceTestViewModel()
+    @State private var selectedTab = 0
 
     var body: some View {
+        TabView(selection: $selectedTab) {
+            // Main TTS Tab
+            mainTTSView
+                .tabItem {
+                    Label("Synthesize", systemImage: "waveform")
+                }
+                .tag(0)
+
+            // Reference Testing Tab
+            NavigationStack {
+                ReferenceTestView(viewModel: referenceTestVM)
+                    .navigationTitle("AB Testing")
+            }
+            .tabItem {
+                Label("AB Test", systemImage: "a.magnify")
+            }
+            .tag(1)
+        }
+        .onAppear {
+            viewModel.loadModel()
+        }
+        .onReceive(viewModel.$isLoaded) { isLoaded in
+            if isLoaded {
+                referenceTestVM.setEngine(viewModel.engine)
+            }
+        }
+    }
+
+    var mainTTSView: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
@@ -105,9 +136,6 @@ struct ContentView: View {
                     .disabled(viewModel.isLoading)
                 }
             }
-        }
-        .onAppear {
-            viewModel.loadModel()
         }
     }
 }
