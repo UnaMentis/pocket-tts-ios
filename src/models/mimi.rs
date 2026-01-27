@@ -143,8 +143,8 @@ impl Conv1d {
         // CAUSAL padding: pad only on the left (like Python SEANet)
         // For kernel k and stride 1: causal_pad = k - 1
         let causal_pad = self.kernel_size - self.stride;
-        let x = x.pad_with_zeros(2, causal_pad, 0)?;  // left pad, no right pad
-        let x = x.conv1d(&self.weight, 0, self.stride, 1, 1)?;  // no built-in padding
+        let x = x.pad_with_zeros(2, causal_pad, 0)?; // left pad, no right pad
+        let x = x.conv1d(&self.weight, 0, self.stride, 1, 1)?; // no built-in padding
         if let Some(bias) = &self.bias {
             let bias = bias.unsqueeze(0)?.unsqueeze(2)?;
             x.broadcast_add(&bias)
@@ -866,11 +866,7 @@ impl MimiDecoder {
     ///
     /// Input: [batch, seq, latent_dim] latent representations
     /// Output: [batch, samples] audio waveform
-    pub fn forward_streaming_stateful(
-        &mut self,
-        latents: &Tensor,
-        state: &mut StreamingMimiState,
-    ) -> Result<Tensor> {
+    pub fn forward_streaming_stateful(&mut self, latents: &Tensor, state: &mut StreamingMimiState) -> Result<Tensor> {
         let (batch, seq, _latent_dim) = latents.dims3()?;
         let device = latents.device();
 
