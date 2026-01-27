@@ -45,6 +45,9 @@ anyhow = "1.0"
 log = "0.4"
 env_logger = "0.11"
 
+# Timestamps for benchmarks
+chrono = "0.4"
+
 # Async (for streaming)
 tokio = { version = "1.0", features = ["sync", "rt"], optional = true }
 
@@ -63,6 +66,10 @@ path = "src/bin/uniffi_bindgen.rs"
 [[bin]]
 name = "test-tts"
 path = "src/bin/test_tts.rs"
+
+[[bin]]
+name = "latency-bench"
+path = "src/bin/latency_bench.rs"
 
 [profile.release]
 opt-level = 3

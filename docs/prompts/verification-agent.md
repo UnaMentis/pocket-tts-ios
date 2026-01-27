@@ -45,7 +45,26 @@ cd validation
 python reference_harness.py
 ```
 
-### 5. Compare Outputs
+### 5. Run Latency Benchmark
+Execute the latency benchmark to measure TTFA and RTF:
+```bash
+./scripts/run-latency-bench.sh --streaming --quick
+```
+
+Or directly:
+```bash
+cargo run --release --bin latency-bench -- \
+  -m /Users/ramerman/dev/unamentis/models/kyutai-pocket-ios \
+  --streaming \
+  --iterations 3
+```
+
+Capture latency metrics:
+- TTFA (Time To First Audio) - target: ~200ms
+- RTF (Real-Time Factor) - target: 3-4x
+- Chunk count and timing
+
+### 6. Compare Outputs
 Run the validation comparison:
 ```bash
 cd validation
@@ -72,15 +91,15 @@ print(f"Correlation: {correlation:.6f}")
 print(f"Sample count - Ref: {len(ref)}, Rust: {len(rust)}")
 ```
 
-### 6. Read Previous Report
+### 7. Read Previous Report
 - Read `docs/audit/verification-report-2.md` (if exists)
 - Extract previous metrics for delta calculation
 - Note any trends
 
-### 7. Generate Report
+### 8. Generate Report
 Create the report using the format below.
 
-### 8. Save Report with Rotation
+### 9. Save Report with Rotation
 1. If `docs/audit/verification-report-2.md` exists, delete it
 2. If `docs/audit/verification-report-1.md` exists, rename it to `verification-report-2.md`
 3. Write new report as `docs/audit/verification-report-1.md`
@@ -114,6 +133,20 @@ Create the report using the format below.
 | Max amplitude | x.xx | x.xx | +/-x.xx | ✅/⚠️/❌ |
 | RMS level | x.xx | x.xx | +/-x.xx | Info |
 | Latent frames | N | N | +/-N | ✅/⚠️/❌ |
+
+## Latency Metrics
+
+| Metric | Target | Current | Status |
+|--------|--------|---------|--------|
+| TTFA (streaming) | ≤200ms | Xms | ✅/⚠️/❌ |
+| RTF (streaming) | ≥3.0x | X.Xx | ✅/⚠️/❌ |
+| RTF (sync) | ≥3.0x | X.Xx | ✅/⚠️/❌ |
+| Chunk count | N/A | N | Info |
+
+### Latency Status Key
+- ✅ = Meets target (TTFA ≤200ms, RTF ≥3.0x)
+- ⚠️ = Acceptable (TTFA ≤300ms, RTF ≥2.5x)
+- ❌ = Below target (TTFA >300ms or RTF <2.5x)
 
 ### Status Key
 - ✅ = Improved or at target (correlation > 0.95)
