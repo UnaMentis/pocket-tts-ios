@@ -488,7 +488,11 @@ impl PocketTTSModel {
     ///
     /// Note: The latents are NOT denormalized here - they should already be
     /// in the denormalized form (matching Python's mimi_decoding_input).
-    pub fn decode_latents(&mut self, latents_f32: &[f32], num_frames: usize) -> std::result::Result<Vec<f32>, PocketTTSError> {
+    pub fn decode_latents(
+        &mut self,
+        latents_f32: &[f32],
+        num_frames: usize,
+    ) -> std::result::Result<Vec<f32>, PocketTTSError> {
         let latent_dim = 32;
         let expected_len = num_frames * latent_dim;
 
@@ -502,12 +506,8 @@ impl PocketTTSModel {
         }
 
         // Create tensor [1, num_frames, 32]
-        let latents = Tensor::from_vec(
-            latents_f32.to_vec(),
-            (1, num_frames, latent_dim),
-            &self.device,
-        )
-        .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
+        let latents = Tensor::from_vec(latents_f32.to_vec(), (1, num_frames, latent_dim), &self.device)
+            .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
 
         eprintln!("[PocketTTS] decode_latents: input shape {:?}", latents.dims());
 
