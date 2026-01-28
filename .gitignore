@@ -40,3 +40,11 @@ tests/ios-harness/PocketTTSDemo/PocketTTSDemo/Models/
 tests/ios-harness/PocketTTSDemo/PocketTTSDemo/pocket_tts_ios.swift
 tests/ios-harness/PocketTTSDemo/PocketTTSDemo/PocketTTSSwift.swift
 tests/ios-harness/PocketTTSDemo/*.xcodeproj/
+
+# Release artifacts (uploaded by CI, not committed)
+/release/
+
+# Test screenshots (transient debugging artifacts)
+*.png
+streaming_fix_test*.png
+test_screenshot*.png
