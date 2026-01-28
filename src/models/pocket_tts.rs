@@ -93,7 +93,20 @@ impl PocketTTSModel {
         self.custom_voice = None;
     }
 
-    /// Synthesize text to audio
+    /// Synthesize text to audio (SYNC MODE)
+    ///
+    /// **NOTE: Not for current on-device use.** Latency is king for on-device TTS.
+    /// Use [`synthesize_true_streaming`] instead, which provides audio chunks
+    /// via callback with ~200ms Time To First Audio (TTFA).
+    ///
+    /// This sync mode exists for:
+    /// - Reference/debugging purposes
+    /// - Batch processing scenarios where latency doesn't matter
+    /// - Comparison testing against streaming mode
+    ///
+    /// The sync mode processes all tokens at once and returns complete audio,
+    /// which has higher latency but uses NON-CAUSAL transformer attention for
+    /// potentially different audio characteristics.
     pub fn synthesize(&mut self, text: &str) -> std::result::Result<Vec<f32>, PocketTTSError> {
         eprintln!("[PocketTTS] synthesize called with text len: {}", text.len());
 
@@ -188,76 +201,11 @@ impl PocketTTSModel {
         Ok(audio_vec)
     }
 
-    /// Streaming synthesis - yields audio chunks
-    pub fn synthesize_streaming<F>(&mut self, text: &str, chunk_callback: F) -> std::result::Result<(), PocketTTSError>
-    where
-        F: Fn(&[f32], bool) -> bool, // Returns false to stop
-    {
-        // Tokenize text
-        let token_ids = self.tokenizer.encode(text)?;
-
-        // Get voice embedding
-        let voice = if let Some(ref custom) = self.custom_voice {
-            Some(custom)
-        } else {
-            self.voice_bank.get(self.config.voice_index as usize)
-        };
-
-        // Reset caches
-        self.flowlm.reset_cache();
-
-        // Process in chunks for streaming
-        let chunk_size = 32; // tokens per chunk
-        let overlap_samples = (self.mimi.sample_rate() as f32 * 0.05) as usize; // 50ms overlap
-        let mut previous_tail: Option<Tensor> = None;
-        let num_flow_steps = self.config.consistency_steps.max(1) as usize;
-
-        for (i, chunk) in token_ids.chunks(chunk_size).enumerate() {
-            let is_last = i == (token_ids.len() / chunk_size);
-
-            // Create tensor for chunk
-            let token_tensor = Tensor::from_vec(
-                chunk.iter().map(|&id| id as i64).collect::<Vec<_>>(),
-                (1, chunk.len()),
-                &self.device,
-            )
-            .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
-
-            // Generate latents with FlowLM + FlowNet (returns normalized latents)
-            let latents_normalized = self
-                .flowlm
-                .generate_latents(&token_tensor, voice, num_flow_steps, self.config.temperature)
-                .map_err(|e| PocketTTSError::InferenceFailed(format!("FlowLM: {}", e)))?;
-
-            // Denormalize latents before passing to Mimi
-            // Python: mimi_decoding_input = latent * emb_std + emb_mean
-            let latents = self
-                .flowlm
-                .denormalize_latents(&latents_normalized)
-                .map_err(|e| PocketTTSError::InferenceFailed(format!("Denormalize: {}", e)))?;
-
-            // Decode with overlap-add
-            let (audio, tail) = self
-                .mimi
-                .decode_streaming(&latents, overlap_samples, previous_tail.as_ref())
-                .map_err(|e| PocketTTSError::InferenceFailed(format!("Mimi: {}", e)))?;
-
-            previous_tail = Some(tail);
-
-            // Convert to Vec<f32>
-            let audio = audio.squeeze(0).map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
-            let audio_vec: Vec<f32> = audio.to_vec1().map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
-
-            // Callback with audio chunk
-            if !chunk_callback(&audio_vec, is_last) {
-                break; // User requested stop
-            }
-        }
-
-        Ok(())
-    }
-
-    /// True streaming synthesis - yields audio as soon as possible
+    /// True streaming synthesis - yields audio as soon as possible (PREFERRED METHOD)
+    ///
+    /// **This is the PREFERRED method for on-device TTS.** Latency is king - this
+    /// method achieves ~200ms Time To First Audio (TTFA), delivering audio to the
+    /// user as quickly as possible.
     ///
     /// Unlike `synthesize_streaming` which chunks by tokens, this method:
     /// 1. Tokenizes ALL text upfront
@@ -339,9 +287,10 @@ impl PocketTTSModel {
         let should_continue = RefCell::new(true);
         let callback_error: RefCell<Option<PocketTTSError>> = RefCell::new(None);
 
-        // For crossfade smoothing at chunk boundaries (backup safety net)
-        let crossfade_samples = 480; // 20ms at 24kHz
-        let previous_chunk_tail: RefCell<Option<Vec<f32>>> = RefCell::new(None);
+        // NOTE: No crossfade needed - Mimi's streaming ConvTranspose1d state
+        // handles overlap-add internally via partial buffers that persist
+        // across frames. Adding crossfade would blend DIFFERENT audio content
+        // (end of chunk A with start of chunk B) causing artifacts.
 
         // Generate latents with streaming callback that decodes INLINE
         let result = self.flowlm.generate_latents_streaming(
@@ -398,8 +347,8 @@ impl PocketTTSModel {
                         },
                     };
 
-                    // Extract samples
-                    let mut audio_vec: Vec<f32> = match audio.squeeze(0).and_then(|a| a.to_vec1()) {
+                    // Extract samples - no crossfade needed, Mimi handles boundaries
+                    let audio_vec: Vec<f32> = match audio.squeeze(0).and_then(|a| a.to_vec1()) {
                         Ok(v) => v,
                         Err(e) => {
                             *callback_error.borrow_mut() = Some(PocketTTSError::InferenceFailed(e.to_string()));
@@ -408,50 +357,17 @@ impl PocketTTSModel {
                         },
                     };
 
-                    // Apply crossfade with previous chunk's tail as safety net
-                    let mut prev_tail = previous_chunk_tail.borrow_mut();
-                    if let Some(ref tail) = *prev_tail {
-                        let fade_len = crossfade_samples.min(tail.len()).min(audio_vec.len());
-                        if fade_len > 0 {
-                            for i in 0..fade_len {
-                                let fade_out = 1.0 - (i as f32 / fade_len as f32);
-                                let fade_in = i as f32 / fade_len as f32;
-                                audio_vec[i] = tail[i] * fade_out + audio_vec[i] * fade_in;
-                            }
-                        }
-                    }
-
-                    // Save tail for next chunk's crossfade
-                    if audio_vec.len() > crossfade_samples {
-                        *prev_tail = Some(audio_vec[audio_vec.len() - crossfade_samples..].to_vec());
-                        // Trim the tail off current chunk (it will be blended into next)
-                        audio_vec.truncate(audio_vec.len() - crossfade_samples);
-                    } else {
-                        *prev_tail = None;
-                    }
-                    drop(prev_tail);
-
-                    // Callback with audio chunk
+                    // Callback with audio chunk directly
                     if !audio_vec.is_empty() && !chunk_callback(&audio_vec, is_eos) {
                         *should_continue.borrow_mut() = false;
                         return LatentStreamControl::Stop;
                     }
-
-                    // On final chunk, flush the remaining tail
-                    if is_eos {
-                        if let Some(tail) = previous_chunk_tail.borrow_mut().take() {
-                            if !tail.is_empty() {
-                                chunk_callback(&tail, true);
-                            }
-                        }
-                    }
                 }
 
-                if is_eos {
-                    LatentStreamControl::Stop
-                } else {
-                    LatentStreamControl::Continue
-                }
+                // Always continue - let generate_latents_streaming handle EOS termination
+                // with proper frames_after_eos logic (generates additional latents after EOS)
+                // Returning Stop here would skip those additional latents!
+                LatentStreamControl::Continue
             },
         );
 

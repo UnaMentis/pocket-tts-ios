@@ -13,15 +13,15 @@ use crate::error::PocketTTSError;
 /// Audio sample format
 pub const SAMPLE_RATE: u32 = 24000;
 pub const CHANNELS: u16 = 1;
-pub const BITS_PER_SAMPLE: u16 = 32;
+pub const BITS_PER_SAMPLE: u16 = 16; // Int16 for iOS compatibility
 
-/// Convert raw f32 PCM samples to WAV bytes
+/// Convert raw f32 PCM samples to WAV bytes (Int16 format for iOS compatibility)
 pub fn samples_to_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>, PocketTTSError> {
     let spec = WavSpec {
         channels: CHANNELS,
         sample_rate,
         bits_per_sample: BITS_PER_SAMPLE,
-        sample_format: SampleFormat::Float,
+        sample_format: SampleFormat::Int, // Int16 for iOS AVAudioPlayer
     };
 
     let mut buffer = Cursor::new(Vec::new());
@@ -30,8 +30,11 @@ pub fn samples_to_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>, Pock
             WavWriter::new(&mut buffer, spec).map_err(|e| PocketTTSError::AudioEncodingFailed(e.to_string()))?;
 
         for &sample in samples {
+            // Convert f32 [-1.0, 1.0] to i16 [-32768, 32767]
+            let clamped = sample.clamp(-1.0, 1.0);
+            let int_sample = (clamped * 32767.0) as i16;
             writer
-                .write_sample(sample)
+                .write_sample(int_sample)
                 .map_err(|e| PocketTTSError::AudioEncodingFailed(e.to_string()))?;
         }
 

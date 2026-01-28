@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2025-01-27
+
+### Removed
+- **BREAKING**: Removed legacy token-chunked streaming API (`start_streaming`, `synthesize_streaming`)
+  - This method chunked text into token batches with higher latency than true streaming
+  - Use `start_true_streaming()` instead for optimal TTFA (~200ms)
+
+### Fixed
+- True streaming audio quality now matches sync mode (removed broken crossfade logic)
+- Fixed callback return behavior to properly generate `frames_after_eos` padding
+- Natural EOS detection now works correctly (changed `min_gen_steps` from 3 to 0)
+
+### Changed
+- `synthesize()` (sync mode) is now documented as "for debugging/batch processing"
+- `synthesize_true_streaming()` is now the sole recommended streaming method
+
+### Documentation
+- Updated API documentation to clarify the two synthesis modes:
+  - `synthesize()` - Sync mode for debugging and batch processing
+  - `synthesize_true_streaming()` - Preferred method for on-device TTS (~200ms TTFA)
+
 ## [0.4.0] - 2025-01-24 (Beta)
 
 ### Added

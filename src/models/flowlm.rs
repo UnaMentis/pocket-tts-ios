@@ -673,7 +673,7 @@ impl FlowLM {
         let eos_threshold = -4.0;
         let num_text_tokens = token_ids.dim(1)?;
         let frames_after_eos = std::cmp::min(5, (num_text_tokens + 3) / 4);
-        let min_gen_steps = 3;
+        let min_gen_steps = 0; // Match batch generate_latents for consistent EOS detection
 
         let mut all_latents: Vec<Tensor> = Vec::new();
         let mut eos_step: Option<usize> = None;

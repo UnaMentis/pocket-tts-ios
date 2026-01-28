@@ -92,10 +92,6 @@ interface PocketTTSEngine {
     [Throws=PocketTTSError]
     SynthesisResult synthesize_with_voice(string text, u32 voice_index);
 
-    // Start streaming synthesis (chunks by tokens)
-    [Throws=PocketTTSError]
-    void start_streaming(string text, TTSEventHandler handler);
-
     // Start true streaming synthesis (optimized TTFA)
     // Tokenizes all text upfront and yields audio in small batches
     [Throws=PocketTTSError]
