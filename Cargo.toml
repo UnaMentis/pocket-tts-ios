@@ -1,6 +1,6 @@
 [package]
 name = "pocket-tts-ios"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 authors = ["UnaMentis (iOS integration)", "babybirdprd (original Rust/Candle port)"]
 description = "Kyutai Pocket TTS for iOS via Candle"
@@ -70,6 +70,10 @@ path = "src/bin/test_tts.rs"
 [[bin]]
 name = "latency-bench"
 path = "src/bin/latency_bench.rs"
+
+[[bin]]
+name = "sync-stream-compare"
+path = "src/bin/sync_stream_compare.rs"
 
 [profile.release]
 opt-level = 3

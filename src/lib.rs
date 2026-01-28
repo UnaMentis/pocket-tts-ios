@@ -7,6 +7,7 @@
 #![allow(clippy::empty_line_after_doc_comments)]
 
 pub mod audio;
+pub mod audio_analysis;
 pub mod config;
 pub mod engine;
 pub mod error;

@@ -460,6 +460,27 @@ The implementation is **production-ready for iOS use cases** that primarily invo
 
 ---
 
+### v0.4.1: Streaming Quality Fixes & API Cleanup (January 27, 2025)
+
+Following user reports that streaming mode sounded "wonky" compared to sync mode, investigation revealed three issues:
+
+1. **Broken crossfade logic** - The streaming path applied artificial crossfade at chunk boundaries, blending different audio content together (end of chunk A with start of chunk B). This was removed entirely since Mimi's streaming ConvTranspose1d state already handles continuity via persistent partial buffers.
+
+2. **Callback termination bug** - The callback returned `Stop` on EOS, cutting off the `frames_after_eos` padding needed for natural audio endings. Fixed to return `Continue` and let the generation loop handle termination.
+
+3. **Premature EOS detection** - `min_gen_steps = 3` prevented short phrases from detecting EOS naturally. Changed to 0.
+
+Additionally, the **legacy token-chunked streaming API was removed** (`start_streaming`, `synthesize_streaming`). This method provided no unique value over the other two modes:
+- Higher latency than true streaming (chunked by tokens)
+- Lower quality than sync mode (artificial boundaries)
+- Confusing API with two "streaming" methods
+
+**v0.4.1 API (streamlined to two methods):**
+- `synthesize()` - Sync mode for batch processing and single file generation
+- `start_true_streaming()` - True streaming (~200ms TTFA, **preferred for on-device**)
+
+---
+
 ## The Story Continues
 
 As of January 2026, Pocket TTS iOS has achieved its **first public beta release (v0.4.0)**. The journey from 0.0016 correlation to 0.81 correlation for short phrases represents a remarkable 500x improvement through systematic debugging.

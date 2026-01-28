@@ -148,12 +148,11 @@ mod tests {
         let samples = vec![0.0f32; 100];
         let wav = samples_to_wav(&samples, 24000).unwrap();
 
-        // hound adds extra chunks for float format (fact chunk = 12 bytes, padding = 12 bytes)
-        // Header is 44 bytes base + 24 bytes extra = 68 bytes, then data (100 samples * 4 bytes)
-        // Just verify it contains the data
-        let data_size = 100 * 4; // 400 bytes of sample data
+        // Int16 format: 100 samples * 2 bytes = 200 bytes of sample data
+        // Header is 44 bytes for standard PCM WAV
+        let data_size = 100 * 2; // 200 bytes of sample data (Int16)
         assert!(wav.len() >= data_size, "WAV should contain at least the sample data");
-        assert!(wav.len() < data_size + 200, "WAV header shouldn't be excessive");
+        assert!(wav.len() < data_size + 100, "WAV header shouldn't be excessive");
     }
 
     #[test]
@@ -161,9 +160,9 @@ mod tests {
         let samples: Vec<f32> = vec![];
         let wav = samples_to_wav(&samples, 24000).unwrap();
 
-        // Should still have valid header (hound adds fact chunk for float format)
+        // Should still have valid header (44 bytes for standard PCM WAV)
         assert!(wav.len() >= 44, "WAV should have at least minimal header");
-        assert!(wav.len() < 200, "Empty WAV shouldn't be too large");
+        assert!(wav.len() < 100, "Empty WAV shouldn't be too large");
     }
 
     #[test]

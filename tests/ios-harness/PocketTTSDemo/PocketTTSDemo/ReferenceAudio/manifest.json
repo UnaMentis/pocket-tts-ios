@@ -1,26 +1,40 @@
 {
   "sample_rate": 24000,
+  "format": "Int16 PCM WAV (iOS compatible)",
+  "voice": "alba",
+  "note": "Generated using actual Python TTS pipeline - REAL SPEECH",
   "phrases": [
     {
       "id": "short",
-      "text": "Hello world.",
-      "description": "Short phrase for quick testing",
-      "audio_file": "reference_short.wav",
-      "latents_file": "reference_short_latents.f32"
+      "text": "Hello, this is a test of the Pocket TTS system.",
+      "description": "TTS output for: Hello, this is a test of the P...",
+      "audio_file": "reference_short_int16.wav",
+      "samples": 86400,
+      "duration_sec": 3.6
     },
     {
       "id": "medium",
       "text": "The quick brown fox jumps over the lazy dog.",
-      "description": "Medium phrase with all letters",
-      "audio_file": "reference_medium.wav",
-      "latents_file": "reference_medium_latents.f32"
+      "description": "TTS output for: The quick brown fox jumps over...",
+      "audio_file": "reference_medium_int16.wav",
+      "samples": 88320,
+      "duration_sec": 3.68
     },
     {
-      "id": "long",
-      "text": "This is a longer test sentence to verify that the text to speech system handles extended input correctly and produces natural sounding audio.",
-      "description": "Long phrase for extended testing",
-      "audio_file": "reference_long.wav",
-      "latents_file": "reference_long_latents.f32"
+      "id": "numbers",
+      "text": "One two three four five six seven eight nine ten.",
+      "description": "TTS output for: One two three four five six se...",
+      "audio_file": "reference_numbers_int16.wav",
+      "samples": 59520,
+      "duration_sec": 2.48
+    },
+    {
+      "id": "question",
+      "text": "How are you doing today?",
+      "description": "TTS output for: How are you doing today?...",
+      "audio_file": "reference_question_int16.wav",
+      "samples": 32640,
+      "duration_sec": 1.36
     }
   ]
 }

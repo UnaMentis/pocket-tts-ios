@@ -6,6 +6,52 @@ Porting Kyutai Pocket TTS (~117M parameter on-device TTS model) from Python to R
 
 **Current Status**: ✅ **PRODUCTION READY**
 
+---
+
+## Session 2025-01-27: Streaming Quality Fixes & API Cleanup
+
+### Summary
+Fixed streaming audio quality issues and cleaned up the API by removing the legacy token-chunked streaming method.
+
+### Fixes Applied
+
+#### 1. Removed Broken Crossfade (FIXED)
+**Problem**: True streaming mode applied artificial crossfade at chunk boundaries, blending DIFFERENT audio content together (end of chunk A with start of chunk B).
+**Root Cause**: The crossfade was designed as a "safety net" but actually introduced timing artifacts. It blended sequential audio content rather than overlapping audio like proper overlap-add.
+**Fix**: Removed crossfade entirely - Mimi's streaming ConvTranspose1d state already handles continuity via partial buffers that persist across frames.
+**File**: `src/models/pocket_tts.rs`
+
+#### 2. Fixed Callback Return on EOS (FIXED)
+**Problem**: Callback returned `Stop` when `is_eos=true`, cutting off the `frames_after_eos` padding needed for natural audio endings.
+**Fix**: Changed to return `Continue` on EOS, letting `generate_latents_streaming` handle termination with proper `frames_after_eos` logic.
+**File**: `src/models/pocket_tts.rs` (line 446)
+
+#### 3. Natural EOS Detection (FIXED)
+**Problem**: `min_gen_steps = 3` prevented immediate EOS detection for short phrases.
+**Fix**: Changed to `min_gen_steps = 0` for natural EOS detection.
+**File**: `src/models/flowlm.rs`
+
+### API Cleanup
+
+#### Removed Legacy Token-Chunked Streaming
+**Rationale**: The `synthesize_streaming()` method provided no unique value:
+- Higher latency than true streaming (chunked by tokens, not continuous)
+- Lower quality than sync mode (artificial chunk boundaries)
+- Confusing API with two "streaming" methods that users might mistake
+
+**Files Modified**:
+- `src/models/pocket_tts.rs` - Removed `synthesize_streaming()`
+- `src/engine.rs` - Removed `start_streaming()`
+- `src/pocket_tts.udl` - Removed from UniFFI interface
+
+### Current API (v0.4.1)
+| Method | Purpose | Use Case |
+|--------|---------|----------|
+| `synthesize()` | Sync mode | Batch processing, single file generation, reference comparison |
+| `synthesize_true_streaming()` | True streaming (~200ms TTFA) | **Preferred for on-device TTS** |
+
+---
+
 The Rust implementation is now feature-complete with random noise enabled (matching Python's production behavior):
 - All 91 unit tests passing
 - Audio quality metrics: 91% amplitude ratio, 98% RMS ratio vs Python
@@ -1392,3 +1438,54 @@ Added to CLAUDE.md:
 The reference audio files need to be added to the Xcode project's bundle resources to be included in the app. When the user opens Xcode, they may need to:
 1. Select the ReferenceAudio folder in Project Navigator
 2. Ensure "Target Membership" includes PocketTTSDemo
+
+---
+
+## Audio Format Requirements
+
+### iOS Compatibility (CRITICAL)
+
+**iOS `AVAudioPlayer` requires Int16 PCM WAV format.** Float32 WAV files will not play correctly.
+
+| Format | iOS AVAudioPlayer | Notes |
+|--------|-------------------|-------|
+| Int16 PCM (16-bit signed) | ✅ Supported | **USE THIS** |
+| Float32 (32-bit IEEE float) | ❌ Not supported | Produces noise/spikes |
+
+### Rust WAV Output Configuration
+
+Located in `src/audio.rs`:
+
+```rust
+pub const BITS_PER_SAMPLE: u16 = 16;  // Int16 for iOS compatibility
+
+let spec = WavSpec {
+    channels: CHANNELS,
+    sample_rate,
+    bits_per_sample: BITS_PER_SAMPLE,
+    sample_format: SampleFormat::Int,  // Int16 for iOS AVAudioPlayer
+};
+```
+
+### Reference Audio Files
+
+Reference audio files in `tests/ios-harness/PocketTTSDemo/PocketTTSDemo/ReferenceAudio/` must be Int16 format.
+
+To convert Float32 to Int16:
+```python
+# Python conversion
+with wave.open(output_path, 'wb') as out:
+    out.setnchannels(1)
+    out.setsampwidth(2)  # 16-bit = 2 bytes
+    out.setframerate(24000)
+    int16_samples = [(max(-1, min(1, s)) * 32767) for s in float_samples]
+    out.writeframes(struct.pack(f'<{len(int16_samples)}h', *int16_samples))
+```
+
+### Verification
+
+Always verify WAV files are playable before bundling:
+```bash
+afplay path/to/file.wav  # Should play without error
+afinfo path/to/file.wav  # Should show "pcm_s16le" or "Int16"
+```

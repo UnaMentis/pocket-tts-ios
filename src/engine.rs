@@ -120,68 +120,6 @@ impl PocketTTSEngine {
         result
     }
 
-    /// Start streaming synthesis
-    pub fn start_streaming(&self, text: String, handler: Box<dyn TTSEventHandler>) -> Result<(), PocketTTSError> {
-        // Reset cancellation flag
-        *self.is_cancelled.lock().unwrap() = false;
-
-        let mut model_guard = self
-            .model
-            .lock()
-            .map_err(|_| PocketTTSError::InferenceFailed("Lock error".into()))?;
-
-        let model = model_guard.as_mut().ok_or(PocketTTSError::ModelNotLoaded)?;
-
-        let sample_rate = model.sample_rate();
-        let is_cancelled = Arc::new(Mutex::new(false));
-        let is_cancelled_clone = is_cancelled.clone();
-
-        // Store reference for cancellation
-        {
-            let mut cancelled = self.is_cancelled.lock().unwrap();
-            *cancelled = false;
-        }
-
-        // Streaming synthesis with callback
-        let result = model.synthesize_streaming(&text, |samples, is_final| {
-            // Check cancellation
-            if *is_cancelled_clone.lock().unwrap() {
-                return false;
-            }
-
-            // Convert to bytes
-            let audio_bytes = audio::samples_to_bytes(samples);
-
-            // Create chunk
-            let chunk = AudioChunk {
-                audio_data: audio_bytes,
-                sample_rate,
-                is_final,
-            };
-
-            // Calculate progress (approximate)
-            let progress = if is_final { 1.0 } else { 0.5 };
-            handler.on_progress(progress);
-
-            // Send chunk
-            handler.on_audio_chunk(chunk);
-
-            if is_final {
-                handler.on_complete();
-            }
-
-            true // Continue
-        });
-
-        match result {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                handler.on_error(e.to_string());
-                Err(e)
-            },
-        }
-    }
-
     /// Start true streaming synthesis with optimized TTFA
     ///
     /// Unlike `start_streaming` which chunks by tokens, this method:

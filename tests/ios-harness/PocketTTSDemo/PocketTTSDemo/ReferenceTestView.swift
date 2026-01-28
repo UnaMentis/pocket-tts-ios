@@ -14,7 +14,7 @@ struct ReferencePhrase: Identifiable, Codable {
     let text: String
     let description: String
     let audio_file: String
-    let latents_file: String
+    let latents_file: String?  // Optional - not needed for direct audio playback testing
 }
 
 /// Manifest for reference audio files
@@ -92,60 +92,102 @@ class ReferenceTestViewModel: ObservableObject {
         }
     }
 
-    func generateFromLatents() {
+    func generateWithRustTTS() {
         guard let phrase = selectedPhrase else { return }
         guard let engine = engine else {
             status = "ERROR: TTS engine not initialized"
             return
         }
 
-        // Load latents from file
-        guard let latentsURL = Bundle.main.url(forResource: phrase.latents_file.replacingOccurrences(of: ".f32", with: ""), withExtension: "f32", subdirectory: "ReferenceAudio") else {
-            status = "ERROR: Latents file not found: \(phrase.latents_file)"
-            return
-        }
-
         isGenerating = true
-        status = "Generating audio from latents..."
+        status = "Generating audio with Rust TTS (streaming)..."
 
         Task {
             do {
-                let latentsData = try Data(contentsOf: latentsURL)
-
-                // Calculate dimensions from file size (each float is 4 bytes)
-                let floatCount = latentsData.count / 4
-                let latentDim = 32
-                let numFrames = floatCount / latentDim
-
-                print("[ReferenceTest] Loaded latents: \(numFrames) frames x \(latentDim) dim")
+                print("[ReferenceTest] Generating TTS (STREAMING MODE) for: \(phrase.text)")
 
                 let startTime = CFAbsoluteTimeGetCurrent()
 
-                // Call Rust engine to decode latents
-                let result = try engine.decodeLatents(latentsData: latentsData, numFrames: UInt32(numFrames))
+                // Use STREAMING mode - this is the only mode we use on-device
+                // Sync mode exists but is not for current use (latency is king)
+                let handler = ABTestStreamingHandler(
+                    startTime: startTime,
+                    onComplete: { [weak self] audioData, sampleRate, ttfaMs in
+                        guard let self = self else { return }
 
-                let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000.0
-                generationTimeMs = elapsed
+                        let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000.0
+                        self.generationTimeMs = elapsed
+                        self.ttfaMs = ttfaMs
 
-                // Result is already WAV-encoded from Rust
-                generatedAudioData = result.audioData
+                        // Convert raw float audio data to WAV format for playback
+                        self.generatedAudioData = self.rawAudioToWav(audioData: audioData, sampleRate: sampleRate)
 
-                print("[ReferenceTest] Generated audio: \(result.audioData.count) bytes in \(elapsed)ms")
+                        let sampleCount = audioData.count / MemoryLayout<Float>.size
+                        print("[ReferenceTest] Generated audio: \(sampleCount) samples in \(elapsed)ms (TTFA: \(ttfaMs)ms)")
 
-                // Compute correlation
-                if let refData = referenceAudioData, let genData = generatedAudioData {
-                    computeCorrelation(reference: refData, generated: genData)
-                }
+                        // Compute correlation between Python reference and Rust output
+                        if let refData = self.referenceAudioData, let genData = self.generatedAudioData {
+                            self.computeCorrelation(reference: refData, generated: genData)
+                        }
 
-                status = String(format: "Generated in %.1fms. Correlation: %.4f", elapsed, correlationResult ?? 0)
+                        self.status = String(format: "Generated in %.0fms (TTFA: %.0fms). Ready for AB comparison.", elapsed, ttfaMs)
+                        self.isGenerating = false
+                    },
+                    onError: { [weak self] error in
+                        self?.status = "ERROR: Streaming failed: \(error)"
+                        print("[ReferenceTest] Streaming failed: \(error)")
+                        self?.isGenerating = false
+                    }
+                )
+
+                try engine.startTrueStreaming(text: phrase.text, handler: handler)
 
             } catch {
                 status = "ERROR: Generation failed: \(error)"
                 print("[ReferenceTest] Generation failed: \(error)")
+                isGenerating = false
             }
-
-            isGenerating = false
         }
+    }
+
+    @Published var ttfaMs: Double?
+
+    /// Convert raw float audio data to WAV format
+    /// The input audioData is already in 32-bit float format from the TTS engine
+    private func rawAudioToWav(audioData: Data, sampleRate: UInt32) -> Data {
+        var wavData = Data()
+
+        // WAV header
+        let numChannels: UInt16 = 1
+        let bitsPerSample: UInt16 = 32
+        let byteRate = sampleRate * UInt32(numChannels) * UInt32(bitsPerSample / 8)
+        let blockAlign = numChannels * (bitsPerSample / 8)
+        let dataSize = UInt32(audioData.count)
+        let fileSize = 36 + dataSize
+
+        // RIFF header
+        wavData.append(contentsOf: "RIFF".utf8)
+        wavData.append(contentsOf: withUnsafeBytes(of: fileSize.littleEndian) { Array($0) })
+        wavData.append(contentsOf: "WAVE".utf8)
+
+        // fmt chunk
+        wavData.append(contentsOf: "fmt ".utf8)
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt32(16).littleEndian) { Array($0) })
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt16(3).littleEndian) { Array($0) }) // IEEE float
+        wavData.append(contentsOf: withUnsafeBytes(of: numChannels.littleEndian) { Array($0) })
+        wavData.append(contentsOf: withUnsafeBytes(of: sampleRate.littleEndian) { Array($0) })
+        wavData.append(contentsOf: withUnsafeBytes(of: byteRate.littleEndian) { Array($0) })
+        wavData.append(contentsOf: withUnsafeBytes(of: blockAlign.littleEndian) { Array($0) })
+        wavData.append(contentsOf: withUnsafeBytes(of: bitsPerSample.littleEndian) { Array($0) })
+
+        // data chunk
+        wavData.append(contentsOf: "data".utf8)
+        wavData.append(contentsOf: withUnsafeBytes(of: dataSize.littleEndian) { Array($0) })
+
+        // Sample data (already in correct format)
+        wavData.append(audioData)
+
+        return wavData
     }
 
     private func computeCorrelation(reference: Data, generated: Data) {
@@ -287,6 +329,59 @@ class AudioPlayerDelegateRef: NSObject, AVAudioPlayerDelegate {
     }
 }
 
+/// Streaming handler for AB test audio generation
+/// Collects audio chunks and measures TTFA (Time To First Audio)
+class ABTestStreamingHandler: TtsEventHandler {
+    private var audioData: Data = Data()
+    private let startTime: CFAbsoluteTime
+    private var ttfaMs: Double = 0
+    private var firstChunkReceived = false
+    private var chunkSampleRate: UInt32 = 24000  // Default, updated from first chunk
+    private let completionHandler: (Data, UInt32, Double) -> Void
+    private let errorHandler: (String) -> Void
+
+    init(
+        startTime: CFAbsoluteTime,
+        onComplete: @escaping (Data, UInt32, Double) -> Void,
+        onError: @escaping (String) -> Void
+    ) {
+        self.startTime = startTime
+        self.completionHandler = onComplete
+        self.errorHandler = onError
+    }
+
+    func onAudioChunk(chunk: AudioChunk) {
+        // Track TTFA
+        if !firstChunkReceived {
+            ttfaMs = (CFAbsoluteTimeGetCurrent() - startTime) * 1000.0
+            firstChunkReceived = true
+            chunkSampleRate = chunk.sampleRate
+            print("[ABTest] First audio chunk received - TTFA: \(String(format: "%.1f", ttfaMs))ms")
+        }
+
+        // Collect audio data
+        audioData.append(chunk.audioData)
+    }
+
+    func onProgress(progress: Float) {
+        // Progress tracking (not used for AB test but required by protocol)
+    }
+
+    func onError(message: String) {
+        print("[ABTest] Error: \(message)")
+        DispatchQueue.main.async {
+            self.errorHandler(message)
+        }
+    }
+
+    func onComplete() {
+        print("[ABTest] Streaming complete - Total audio data: \(audioData.count) bytes")
+        DispatchQueue.main.async {
+            self.completionHandler(self.audioData, self.chunkSampleRate, self.ttfaMs)
+        }
+    }
+}
+
 struct ReferenceTestView: View {
     @ObservedObject var viewModel: ReferenceTestViewModel
 
@@ -342,14 +437,14 @@ struct ReferenceTestView: View {
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                // Generate button
-                Button(action: viewModel.generateFromLatents) {
+                // Generate button - uses actual Rust TTS (not latent decoding)
+                Button(action: viewModel.generateWithRustTTS) {
                     HStack {
                         if viewModel.isGenerating {
                             ProgressView()
                                 .scaleEffect(0.8)
                         }
-                        Text(viewModel.isGenerating ? "Generating..." : "Generate from Latents")
+                        Text(viewModel.isGenerating ? "Generating..." : "Generate with Rust TTS")
                     }
                     .frame(maxWidth: .infinity)
                 }

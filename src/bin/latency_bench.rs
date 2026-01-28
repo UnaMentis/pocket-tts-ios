@@ -309,7 +309,7 @@ fn run_streaming_benchmarks(mut model: PocketTTSModel, config: &BenchConfig) -> 
 
         // Warmup runs
         for _ in 0..config.warmup {
-            let _ = model.synthesize_streaming(text, |_, _| true);
+            let _ = model.synthesize_true_streaming(text, |_, _| true);
         }
 
         // Timed runs
@@ -331,7 +331,7 @@ fn run_streaming_benchmarks(mut model: PocketTTSModel, config: &BenchConfig) -> 
 
             let start = Instant::now();
 
-            let result = model.synthesize_streaming(text, move |samples, _is_final| {
+            let result = model.synthesize_true_streaming(text, move |samples: &[f32], _is_final| {
                 let now = start.elapsed().as_nanos() as u64;
 
                 // Record first chunk time (TTFA)
