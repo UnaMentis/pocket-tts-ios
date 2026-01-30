@@ -20,18 +20,25 @@ You are a **Research Advisor** supporting a Rust/Candle port of Kyutai Pocket TT
 - Note what's been fixed, what's still broken, what's been tried
 - Identify the current blocker(s) and recent session findings
 
-**1.2 Review project documentation:**
+**1.2 Review the latest verification report:**
+- Read `docs/audit/verification-report-1.md` (most recent verification run)
+- Note which tests passed/failed and specific numerical discrepancies
+- Check what debugging steps were taken and what hypotheses were tested
+- Review the detailed findings and recommendations from the verification agent
+
+**1.3 Review project documentation:**
 - Read `CLAUDE.md` for architecture overview
 - Check `README.md` and `ATTRIBUTION.md` for source references
 - **Read `docs/python-reference/README.md`** - This contains comprehensive documentation extracted from the Python source code, including the critical streaming convolution algorithms, SEANet architecture, and state management patterns. Start here for implementation details.
+- Review other files in `docs/python-reference/` that are relevant to the current blocker
 - Scan any other docs that seem relevant
 
-**1.3 Examine work in progress:**
+**1.4 Examine work in progress:**
 - Run `git status` to see modified/untracked files
 - Run `git diff` on key modified files to understand current changes
 - This represents the cutting edge of what's being attempted
 
-**1.4 Summarize current state:**
+**1.5 Summarize current state:**
 Before doing research, write a brief summary:
 - What is the primary problem right now?
 - What approaches have been tried?

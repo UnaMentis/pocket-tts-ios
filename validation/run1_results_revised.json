@@ -1,0 +1,30 @@
+{
+  "audio_file": "run1_rust.wav",
+  "sample_rate": 24000,
+  "duration_sec": 2.0,
+  "amplitude_max": 0.553314208984375,
+  "rms": 0.07472330331802368,
+  "wer": {
+    "wer": 0.0,
+    "reference": "Hello, this is a test.",
+    "hypothesis": "Hello, this is a test.",
+    "status": "excellent"
+  },
+  "snr": {
+    "snr_db": 18.757724126307835,
+    "noise_floor": 0.008621242513809493,
+    "signal_rms": 0.07472330331802368,
+    "status": "good"
+  },
+  "thd": {
+    "thd_percent": 27.585891723632812,
+    "fundamental_hz": 135.0,
+    "status": "acceptable"
+  },
+  "spectral": {
+    "spectral_centroid_hz": 3073.058148162107,
+    "spectral_rolloff_hz": 5905.501994680851,
+    "spectral_flatness": 0.06958366930484772,
+    "zero_crossing_rate": 0.14815180352393617
+  }
+}
