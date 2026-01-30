@@ -64,42 +64,60 @@ Capture latency metrics:
 - RTF (Real-Time Factor) - target: 3-4x
 - Chunk count and timing
 
-### 6. Compare Outputs
-Run the validation comparison:
+### 6. Run Quality Metrics (PRIMARY VALIDATION)
+**CRITICAL:** Waveform correlation is NO LONGER meaningful with random noise enabled (production mode). Use quality metrics instead:
+
 ```bash
-cd validation
-python validate.py
+python3 validation/quality_metrics.py \
+  --audio /tmp/rust_output.wav \
+  --text "Hello, this is a test." \
+  --reference validation/reference_outputs/phrase_00.wav \
+  --whisper-model base \
+  --output-json /tmp/quality_results.json
 ```
 
-Or manually compare:
-```python
-import numpy as np
-from scipy.io import wavfile
+This provides:
+- **WER (Word Error Rate)** - Intelligibility via Whisper ASR (PRIMARY METRIC)
+- **MCD (Mel-Cepstral Distortion)** - Acoustic similarity
+- **SNR (Signal-to-Noise Ratio)** - Signal health
+- **THD (Total Harmonic Distortion)** - Distortion measurement
+- **Spectral Features** - Timbre characteristics
 
-# Load files
-_, ref = wavfile.read('reference_outputs/phrase_00_ref.wav')
-_, rust = wavfile.read('/tmp/rust_output.wav')
-
-# Normalize
-ref = ref.astype(np.float32) / 32768.0
-rust = rust.astype(np.float32) / 32768.0
-
-# Compute metrics
-min_len = min(len(ref), len(rust))
-correlation = np.corrcoef(ref[:min_len], rust[:min_len])[0, 1]
-print(f"Correlation: {correlation:.6f}")
-print(f"Sample count - Ref: {len(ref)}, Rust: {len(rust)}")
+### 7. Compare Against Baseline (Regression Detection)
+```bash
+python3 validation/baseline_tracker.py \
+  --compare \
+  --baseline validation/baselines/baseline_v0.4.1.json \
+  --metrics /tmp/quality_results.json
 ```
 
-### 7. Read Previous Report
+This checks for quality regressions against the established baseline.
+
+### 8. Optional: Waveform Comparison (For Reference Only)
+**NOTE:** With random noise, waveform correlation ≈0 is expected and correct. Only meaningful with deterministic latents.
+
+```bash
+python3 validation/compare_waveforms.py \
+  --reference validation/reference_outputs/phrase_00.wav \
+  --rust /tmp/rust_output.wav
+```
+
+Use this only for:
+- Amplitude/RMS ratios (still useful)
+- Debugging with deterministic latents
+- NOT for primary validation
+
+**NOTE:** The test phrase "Hello, this is a test." is NOT the same as phrase_00 "Hello, this is a test of the Pocket TTS system." Either use the exact reference phrase or generate a matching reference output first.
+
+### 9. Read Previous Report
 - Read `docs/audit/verification-report-2.md` (if exists)
 - Extract previous metrics for delta calculation
 - Note any trends
 
-### 8. Generate Report
+### 10. Generate Report
 Create the report using the format below.
 
-### 9. Save Report with Rotation
+### 11. Save Report with Rotation
 1. If `docs/audit/verification-report-2.md` exists, delete it
 2. If `docs/audit/verification-report-1.md` exists, rename it to `verification-report-2.md`
 3. Write new report as `docs/audit/verification-report-1.md`
@@ -122,17 +140,28 @@ Create the report using the format below.
 | Warnings | N | [list if any] |
 | Clippy | PASS/FAIL | [any warnings] |
 
-## Numerical Metrics
+## Quality Metrics (PRIMARY)
+
+| Metric | Previous | Current | Delta | Status | Target |
+|--------|----------|---------|-------|--------|--------|
+| **WER (%)** | x.x% | x.x% | +/-x.x% | ✅/⚠️/❌ | <5% |
+| **MCD (dB)** | x.x | x.x | +/-x.x | ✅/⚠️/❌ | <6 dB* |
+| **SNR (dB)** | x.x | x.x | +/-x.x | ✅/⚠️/❌ | >40 dB |
+| **THD (%)** | x.x | x.x | +/-x.x | ✅/⚠️/❌ | <1% |
+| Amplitude max | x.xx | x.xx | +/-x.xx | ✅/⚠️/❌ | 0.5-1.0 |
+| RMS | x.xx | x.xx | +/-x.xx | Info | 0.1-0.2 |
+
+**MCD only meaningful with deterministic latents. With random noise, expect MCD ≈10-20 dB (normal).
+
+## Numerical Metrics (SECONDARY)
 
 | Metric | Previous | Current | Delta | Status |
 |--------|----------|---------|-------|--------|
-| Latent cosine sim | x.xxxx | x.xxxx | +/-x.xxxx | ✅/⚠️/❌ |
-| Waveform correlation | x.xxxx | x.xxxx | +/-x.xxxx | ✅/⚠️/❌ |
-| Sample count (Rust) | N | N | +/-N | ✅/⚠️/❌ |
-| Sample count (Python) | N | N | 0 | ✅ |
-| Max amplitude | x.xx | x.xx | +/-x.xx | ✅/⚠️/❌ |
-| RMS level | x.xx | x.xx | +/-x.xx | Info |
-| Latent frames | N | N | +/-N | ✅/⚠️/❌ |
+| Sample count (Rust) | N | N | +/-N | Info |
+| Latent frames | N | N | +/-N | Info |
+| Waveform correlation* | x.xxxx | x.xxxx | +/-x.xxxx | N/A |
+
+**Waveform correlation is NO LONGER a meaningful metric with random noise enabled. Include for reference only.
 
 ## Latency Metrics
 
@@ -149,19 +178,23 @@ Create the report using the format below.
 - ❌ = Below target (TTFA >300ms or RTF <2.5x)
 
 ### Status Key
-- ✅ = Improved or at target (correlation > 0.95)
-- ⚠️ = Unchanged or minor change (<5% delta)
-- ❌ = Regression (>5% worse or correlation decreased)
+- ✅ = At target or improved (WER <5%, SNR >40dB, THD <1%, no regressions vs baseline)
+- ⚠️ = Acceptable (WER 5-10%, SNR 30-40dB, THD 1-3%, minor regressions <10%)
+- ❌ = Below target or significant regression (WER >10%, SNR <30dB, THD >3%, regressions >20%)
 
-## Target Progress
+## Quality Status Summary
 
-```
-Target:  0.95 correlation
-Current: x.xxxx correlation
-Gap:     x.xxxx
+**WER (Intelligibility)**:
+- Current: x.x% | Target: <5% | Status: ✅/⚠️/❌
 
-[===========>................] XX% of target
-```
+**Signal Health**:
+- SNR: x.x dB | Target: >40 dB | Status: ✅/⚠️/❌
+- THD: x.x% | Target: <1% | Status: ✅/⚠️/❌
+
+**Baseline Comparison**:
+- Regressions: N metrics regressed
+- Improvements: N metrics improved
+- Status: ✅ No regressions / ⚠️ Minor regressions / ❌ Significant regressions
 
 ## Regressions (if any)
 [List metrics that got worse, with magnitude and possible cause]
@@ -170,22 +203,38 @@ Gap:     x.xxxx
 [List metrics that got better, with magnitude]
 
 ## Audio Quality Assessment
-- Audible: [Yes/No - does it produce recognizable speech?]
-- Artifacts: [None/Minor/Severe]
-- Duration: [Matches/Too short/Too long]
+- **Intelligibility**: [Excellent/Good/Poor - matches WER]
+- **Artifacts**: [None/Minor/Severe - matches SNR/THD]
+- **Duration**: [Appropriate/Too short/Too long]
+- **Transcription**: [Whisper output for verification]
+
+## Baseline Comparison Details
+[If baseline exists, include detailed comparison from baseline_tracker.py]
 
 ## Notes
 [Any observations about the test run, anomalies, or suggestions]
+
+**IMPORTANT REMINDER**: Waveform correlation is no longer meaningful with random noise. Focus on quality metrics (WER, MCD, SNR, THD) for validation.
 
 ---
 
 ## Important Notes
 
 - **Fresh session each time** - Don't carry over assumptions from previous runs
+- **Quality metrics are primary** - WER, SNR, THD are the main validation metrics
+- **Waveform correlation is deprecated** - Only include for reference, NOT for validation
 - **Be precise** - Include exact numbers, not approximations
-- **Note trends** - If this is worse than last time, flag it prominently
+- **Note trends** - If quality metrics regress, flag prominently
+- **Check baseline** - Always compare against baseline if it exists
 - **Don't fix, report** - Your job is to measure, not to debug
 - **Always save the report** - The implementation agent needs this file
+
+## Reference Documentation
+
+Before running verification, familiarize yourself with:
+- `validation/docs/QUALITY_METRICS.md` - Metric definitions and targets
+- `validation/docs/ITERATIVE_VALIDATION.md` - Validation process
+- `validation/docs/REGRESSION_DETECTION.md` - Baseline tracking usage
 
 ---
 
