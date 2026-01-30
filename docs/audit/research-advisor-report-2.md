@@ -1,80 +1,106 @@
 # Research Advisor Briefing
 
 **Date:** 2026-01-24
-**Current Blocker:** EOS detection diverges for longer phrases (21 frames early); Short phrase correlation 0.81, Long phrase correlation 0.05
-**Research Focus:** EOS logit divergence, numerical precision accumulation, RoPE position drift at high positions, Candle vs PyTorch precision differences
+**Current Blocker:** Hidden state divergence at step 36+ causing EOS detection mismatch; fundamental numerical differences between Candle and PyTorch
+**Research Focus:** Root causes of autoregressive hidden state divergence, Candle vs PyTorch precision differences, cumulative error patterns in transformers
 
 ---
 
 ## Situational Summary
 
-The Rust/Candle port of Pocket TTS has achieved **excellent results for short phrases** - 0.81 waveform correlation with replicate padding implemented. The FlowLM transformer, FlowNet, latent generation, and Mimi SEANet streaming are all working. Audio is intelligible and sounds nearly identical to Python for short inputs.
+The implementation agent has made significant progress with the Rust/Candle port of Pocket TTS. **Short phrases (17 tokens) achieve 0.74-0.81 correlation**, and the pipeline produces intelligible speech. However, a critical issue has been identified:
 
-**The new blocker is EOS detection divergence for longer sequences.** Testing revealed:
+**Hidden states diverge starting around step 36** of autoregressive generation. This is NOT just an EOS threshold issue - the actual hidden state vectors are fundamentally different:
 
-| Phrase Type | Tokens | Rust Frames | Python Frames | Correlation | Status |
-|-------------|--------|-------------|---------------|-------------|--------|
-| Short (17 tokens) | 17 | 43 | 43 | **0.81** | Working |
-| Medium (~50 tokens) | ~50 | 145 | ~166 | **0.05** | EOS mismatch |
-| Long (>100 tokens) | >100 | N/A | N/A | N/A | Exceeds 4096 KV limit |
+| Python Step | Rust Step | Python EOS | Rust EOS | Delta |
+|-------------|-----------|------------|----------|-------|
+| 38          | 36        | -10.62     | -8.45    | +2.17 |
+| 39          | 37        | -10.19     | -6.15    | +4.04 |
+| 40          | 38        | -10.22     | -0.46    | +9.76 |
+| 41          | 39        | -9.58      | +4.39    | +13.97|
 
-**Key finding:** The EOS threshold is correctly set to `-4.0` in both implementations, but the underlying EOS logit distributions diverge over longer sequences. Rust triggers EOS 21 frames (~1.7 seconds) earlier than Python for medium-length inputs.
+The hidden state VALUES themselves are completely different vectors, even though their statistics (mean ~0, std ~0.35) appear similar. This explains why the EOS divergence follows - the `out_eos` linear head is just amplifying hidden state differences.
 
-**Root cause hypotheses:**
-1. Numerical precision accumulation over many transformer forward passes
-2. KV cache differences at higher position indices
-3. RoPE position encoding drift at longer sequences (positions 100+)
-4. Float32 vs BFloat16 accumulation patterns
+**Key contradiction:** PORTING_STATUS.md claims "All 42 latents match with cos_sim=1.0", but if hidden states diverge at step 36+, this can only be true for steps 0-35. The latent comparison may have been from an earlier version, or the FlowNet is somehow producing matching outputs despite hidden state differences (unlikely).
 
-**Additional discovery:** The decoder transformer has a max sequence length of 4096 frames. With 16x upsample, this limits audio to ~20 seconds maximum (256 latents).
+**Current state:**
+- Frame count: Rust 43 vs Python 45 (2 frames short)
+- Aligned correlation: 0.74 (target: >0.95)
+- All components verified correct individually for short sequences
+- Divergence appears to be cumulative, not from a single operation
 
 ---
 
 ## Key Research Findings
 
-### From Official Kyutai Documentation
+### From Official Kyutai Sources
 
-**EOS Detection Mechanism** ([Kyutai docs](https://github.com/kyutai-labs/pocket-tts/blob/main/docs/generate.md)):
-- Default EOS threshold: **-4.0** (verified in `default_parameters.py`)
-- EOS is predicted by `out_eos` linear head: `out_eos(transformer_out) > eos_threshold`
-- `frames_after_eos` parameter controls post-EOS generation (default: auto-calculated)
-- Each frame is 80ms of audio
+**Architecture Confirmation** ([GitHub](https://github.com/kyutai-labs/pocket-tts), [DeepWiki](https://deepwiki.com/kyutai-labs/pocket-tts)):
+- 6-layer transformer with 1024 hidden dim, 16 heads
+- RoPE for position encoding (interleaved, not split halves)
+- LSD (Lagrangian Self Distillation) for flow matching with 1 decode step in practice
+- Default EOS threshold: -4.0
+- Frame rate: 12.5 Hz (80ms per frame)
 
-**Autoregressive Generation** ([DeepWiki analysis](https://deepwiki.com/kyutai-labs/pocket-tts)):
-- `FlowLMModel._sample_next_latent()` generates at 12.5 Hz until EOS
-- Multiple KV caches: FlowLM transformer (6 layers) + Mimi decoder transformer (2 layers)
-- State accumulates through `current_end` position tracking
+**Critical dtype handling** from Python source:
+```python
+# Explicit float32 conversion after transformer
+transformer_out = transformer_out.to(torch.float32)
+```
+This ensures FlowNet receives float32 regardless of transformer's internal dtype.
+
+### From Candle Precision Research
+
+**Known Precision Discrepancies** ([GitHub Issue #3032](https://github.com/huggingface/candle/issues/3032)):
+- MSE between Candle and PyTorch matmul: ~4.1e-10 to ~8.2e-11
+- MAE: 0.000006 to 0.000015 per operation
+- Maintainer confirms: "errors accrue layer by layer for each token"
+- Root cause: Floating-point arithmetic isn't associative; different operation orders produce different results
+
+**ToluClassics Tutorial** ([GitHub](https://github.com/ToluClassics/candle-tutorial)):
+- Recommended: "almost identical results with +/-1% for floating point operations"
+- Key pattern for numerical stability in LayerNorm:
+```rust
+let internal_dtype = match x_dtype {
+    DType::F16 | DType::BF16 => DType::F32,
+    d => d,
+};
+```
+
+### From Autoregressive Error Propagation Research
+
+**Closed-Loop Transformers Paper** ([arXiv:2511.21882](https://arxiv.org/html/2511.21882v1)):
+> "Contemporary autoregressive transformers operate in open loop: each hidden state is computed in a single forward pass and never revised, causing **errors to propagate uncorrected through the sequence**."
+
+Key insight: Once a hidden state is computed, any representational error propagates irreversibly through subsequent tokens. This manifests as:
+- Cumulative hallucination in long-form generation
+- Fragility under distribution shift
+- Catastrophic failure in multi-step reasoning
+
+**For our case:** Each step through the transformer introduces small precision errors. Over 36+ steps, these compound to produce fundamentally different hidden state vectors.
+
+### From LayerNorm Precision Research
+
+**PyTorch GitHub Issue #66707** and NVIDIA docs:
+- LayerNorm needs to be done in fp32 for fp16 inputs, "otherwise overflow happens and there is a significant divergence that starts to add up over multiple chained uses"
+- TensorRT warning: "Running layernorm after self-attention in FP16 may cause overflow. Forcing layernorm layers to run in FP32 precision can help with preserving accuracy."
+
+**Accumulation Error Formula:**
+- Unit round-off for IEEE-754 float32: ~1.19e-7
+- Each layer introduces at most a relative slip
+- Chaining L layers gives compound error through multiplication of (1+delta) terms
 
 ### From RoPE Position Encoding Research
 
-**RoPE Numerical Stability Issues** ([EleutherAI Blog](https://blog.eleuther.ai/rotary-embeddings/), [LearnOpenCV](https://learnopencv.com/rope-position-embeddings/)):
-- RoPE's practical weak spots include **phase drift of fast clocks** and **floating-point precision**
-- Length generalization is a known pain point - models degrade when pushed beyond training context length
-- Modern solutions (NTK, YaRN, sliding-window) address these issues for 128k+ context
+**Known RoPE Issues** ([LearnOpenCV](https://learnopencv.com/rope-position-embeddings/), [EleutherAI](https://blog.eleuther.ai/rotary-embeddings/)):
+- "RoPE's practical weak spots include **phase drift of fast clocks** and **floating-point precision**"
+- At high positions (100+), sine/cosine computations may differ between frameworks
+- Modern solutions (NTK, YaRN) address these for 128k+ context
 
-**Key insight:** At position 150+ in the KV cache, RoPE's sine/cosine values may be computed differently between PyTorch and Candle due to:
-1. Order of floating-point operations
-2. Intermediate precision (BFloat16 vs Float32)
-3. Trigonometric function implementations
-
-### From Candle Framework Research
-
-**PyTorch to Candle Precision** ([ToluClassics Tutorial](https://github.com/ToluClassics/candle-tutorial)):
-- Expected difference: "almost identical results with ±1% for floating point operations"
-- Recommendation: "Use F32 for internal computations in LayerNorm for numerical stability"
-- Weight loading verified - differences compound over many operations
-
-**Known Candle Limitation:**
-- Candle uses different BLAS backends than PyTorch
-- Floating-point operation order may differ
-- No built-in `torch.compile()` equivalent for fusion
-
-### From TTS Stop Detection Research
-
-**EOS Detection Challenges** ([MELLE paper](https://arxiv.org/html/2412.06602v1)):
-- "Each utterance has only one positive frame indicating 'stop'" - extreme class imbalance
-- Small changes to logit distributions can dramatically shift stop timing
-- EOS head sensitivity increases with sequence length
+For Pocket TTS at position 132+ (125 voice + 7 text + latents):
+- Small differences in trigonometric function implementations compound
+- Order of floating-point operations affects results
+- Intermediate precision differences (BFloat16 vs Float32) matter
 
 ---
 
@@ -82,75 +108,82 @@ The Rust/Candle port of Pocket TTS has achieved **excellent results for short ph
 
 ### High Confidence
 
-**1. Compare EOS Logit Trajectories Between Rust and Python** (DIAGNOSTIC PRIORITY)
-- **Why:** This will reveal exactly WHERE and HOW MUCH the logits diverge
+**1. Layer-by-Layer Hidden State Comparison at Step 36** (DIAGNOSTIC PRIORITY)
+- **Why:** Pinpoint exactly where divergence first appears within the transformer
 - **Confidence:** Very High - essential diagnostic
 - **How:**
-  1. Add logging to dump EOS logit at EVERY step in both Rust and Python
-  2. Use the same medium-length phrase in both
-  3. Plot logit values vs step number
-  4. Identify the step where divergence begins (likely around step 40-60)
-  5. The divergence pattern will indicate root cause:
-     - Linear drift → accumulating precision errors
-     - Sudden jump → specific layer/operation mismatch
-     - Oscillating → RoPE phase issues
+  1. Add logging in Python to dump hidden state after EACH of the 6 transformer layers at step 36
+  2. Add matching logging in Rust
+  3. Compare: If layer 0 matches but layer 1 diverges, the issue is in layer 1's attention or MLP
+  4. Continue narrowing: attention vs MLP, Q/K/V computation vs softmax, etc.
+  5. The divergence point will reveal the root cause operation
 
-**2. Force Float32 Throughout FlowLM Transformer** (PRECISION FIX)
-- **Why:** Python may use BFloat16 internally, Candle may have different defaults
-- **Confidence:** High - common source of divergence
+**2. Force Float32 Throughout Transformer** (PRECISION FIX)
+- **Why:** Python explicitly converts to float32 before FlowNet; Rust may not be doing equivalent
+- **Confidence:** High - documented best practice
 - **How:**
-  1. Check current dtype in KV cache creation
-  2. Ensure all attention computations use Float32
-  3. Convert outputs explicitly: `transformer_out.to_dtype(DType::F32)?`
-  4. Pay special attention to softmax and LayerNorm operations
+  1. Ensure all attention computations explicitly use Float32
+  2. Ensure LayerNorm internal computations use Float32
+  3. Ensure matmul accumulations use Float32
+  4. Check: `transformer_out.to_dtype(DType::F32)?` before FlowNet
 
-**3. Verify RoPE Computation at High Positions** (VERIFICATION)
-- **Why:** RoPE errors compound over long sequences
-- **Confidence:** High - known issue area
+**3. Compare KV Cache at Step 36** (VERIFICATION)
+- **Why:** KV cache stores all previous K/V values; if these drift, all future attention is affected
+- **Confidence:** High - directly relevant to autoregressive accumulation
 - **How:**
-  1. Compute `rope_freqs(position=150)` in both Rust and Python
-  2. Compare sine/cosine values to 6+ decimal places
-  3. Check if interleaved dimension ordering is consistent
-  4. Verify head dimension ordering in reshape operations
+  1. Dump K cache for layer 0, positions 130-136 in both implementations
+  2. Compare values to 6+ decimal places
+  3. If K values diverge, the issue is in earlier attention computations
+  4. If K values match but hidden states diverge, the issue is in current step's computation
 
 ### Worth Trying
 
-**4. Use Python EOS Detection on Rust Hidden States** (ISOLATION TEST)
-- **Why:** Isolates whether the issue is in EOS head or hidden state generation
-- **Confidence:** Medium - may reveal root cause
-- **How:**
-  1. Save Rust hidden states at each step to file
-  2. Load in Python and run through Python's `out_eos` head
-  3. Compare predicted EOS steps
-  4. If they match Python's original → issue is in hidden state generation
-  5. If they don't match → issue is in EOS head weights/computation
-
-**5. Adjust EOS Threshold for Rust** (PRACTICAL WORKAROUND)
-- **Why:** If logits are systematically lower, a lower threshold may compensate
-- **Confidence:** Medium - workaround, not fix
-- **How:**
-  1. Based on diagnostic from Approach 1, calculate average logit offset
-  2. Adjust Rust threshold: `eos_threshold = -4.0 + offset`
-  3. Test across multiple phrase lengths
-  4. Document as known difference
-
-**6. Implement Explicit Float32 Accumulation in Attention** (PRECISION FIX)
-- **Why:** Attention score accumulation is where precision matters most
+**4. Verify RoPE at High Positions** (ISOLATION TEST)
+- **Why:** RoPE is applied to every Q/K at every step; small errors compound
 - **Confidence:** Medium - may not be the specific issue
 - **How:**
-  1. In `src/modules/attention.rs`, force QK matmul to Float32
-  2. Keep softmax in Float32 throughout
-  3. Only downcast after attention output is computed
+  1. Compute RoPE for position=135 in both Python and Rust (standalone, not in model)
+  2. Compare sine/cosine values to 8+ decimal places
+  3. If they differ, focus on RoPE implementation
+  4. Check for differences in: base frequency, dimension ordering, precision of powf/exp operations
+
+**5. Use Python Weights on Rust Hidden States** (CROSS-VALIDATION)
+- **Why:** Isolates whether weights or computation differs
+- **Confidence:** Medium - useful diagnostic
+- **How:**
+  1. At step 36, save Rust hidden state to file
+  2. Load in Python and run through Python's `out_eos` head
+  3. If Python's EOS matches Python's original → Rust hidden state is the problem
+  4. If Python's EOS on Rust hidden state differs → Rust hidden state + Python weights = different result (weight issue)
+
+**6. Implement "Sync Point" at Step 35** (WORKAROUND)
+- **Why:** Force Rust to use Python's hidden state, see if subsequent steps match
+- **Confidence:** Medium - experimental
+- **How:**
+  1. Save Python hidden state at step 35
+  2. Load in Rust and inject into KV cache
+  3. Continue Rust generation from step 36
+  4. If outputs match → confirms cumulative error theory
+  5. If outputs still diverge → there's an operation-level bug
 
 ### Speculative
 
-**7. Accept Short-Phrase-Only Support for iOS**
-- **Why:** Short phrases work well (0.81 correlation), iOS use cases often involve short utterances
+**7. Accept Current Correlation for MVP**
+- **Why:** 0.74 correlation produces intelligible speech; iOS users may not notice the difference
 - **Confidence:** Pragmatic fallback
 - **Tradeoffs:**
-  - Document max recommended phrase length (~40 tokens, ~3 seconds)
-  - Long texts would need chunking at application level
-  - Audio quality for short phrases is excellent
+  - Short phrases work excellently (0.81 correlation)
+  - Longer phrases produce slightly shorter audio (2 frames fewer)
+  - Audio quality is still acceptable for many use cases
+  - Document limitation and ship MVP while continuing investigation
+
+**8. Try Alternative Attention Implementation**
+- **Why:** Candle's softmax may accumulate differently than PyTorch's
+- **Confidence:** Low - speculative
+- **How:**
+  1. Implement manual softmax with explicit Float64 accumulation
+  2. Compare results to standard candle_nn::ops::softmax
+  3. If different, use manual implementation
 
 ---
 
@@ -158,48 +191,49 @@ The Rust/Candle port of Pocket TTS has achieved **excellent results for short ph
 
 **Verified Correct:**
 - Tokenization (SentencePiece) - exact match
-- RoPE (interleaved, applied before transpose) - verified at short positions
-- LayerNorm (eps=1e-5) - verified
-- All 6 transformer layers - layer-by-layer verification passed for short sequences
-- FlowNet (sinusoidal order, SiLU, AdaLN) - latent cosine similarity = 1.0
+- RoPE (interleaved pairs, applied before transpose) - verified at short positions
+- LayerNorm (eps=1e-5, affine=true) - verified
+- All 6 transformer layers - layer-by-layer verification passed for SHORT sequences
+- FlowNet (sinusoidal order, SiLU, AdaLN, time embedding) - latent cosine similarity = 1.0 for short sequences
 - Voice conditioning (concatenation, two-phase forward) - verified
 - Latent denormalization - moved before Mimi, verified
-- EOS threshold = -4.0 - matches Python DEFAULT_EOS_THRESHOLD exactly
-
-**Recent Fixes Applied:**
+- EOS threshold = -4.0 - matches Python DEFAULT_EOS_THRESHOLD
 - Replicate padding for SEANet streaming convolutions
 - Full streaming mode for all SEANet Conv1d layers
-- Non-causal attention for decoder transformer
+- Non-causal attention for Mimi decoder transformer
 - min_gen_steps = 0 for natural EOS detection
+- Mimi decoder order (upsample before transformer)
+- Mimi decoder RoPE
+- Upsample padding fix (no padding, then trim)
 
-**Current Implementation Status:**
-- Short phrases: 0.81 correlation - WORKING
-- Audio quality: Intelligible, nearly identical to Python
-- Real-time factor: ~4x on CPU - GOOD
+**Recent Session Activity:**
+- Added `capture_hidden_states.py` for comparing hidden states at critical steps
+- Added EOS trajectory logging at steps 36-42
+- Verified hidden state statistics match but VALUES diverge
 
 ---
 
 ## Specific Questions to Investigate
 
-1. **At what step does the EOS logit divergence begin?**
-   - Is it gradual (precision accumulation) or sudden (specific operation)?
-   - Does it correlate with KV cache filling past a certain threshold?
+1. **At which LAYER does the hidden state divergence first appear at step 36?**
+   - Is it layer 0 (first attention), or does it compound through layers?
+   - Does the attention output diverge, or the MLP output?
 
-2. **What is the EOS logit trajectory for Python on the medium phrase?**
-   - Does Python's EOS logit stay below -4.0 until step ~166?
-   - How close to the threshold does it get at step 145 (when Rust triggers)?
+2. **Are the KV cache values at position 130+ identical between Rust and Python?**
+   - If K/V drift in the cache, all subsequent attention is wrong
+   - The cache stores values from ALL previous steps
 
-3. **Is the hidden state divergence uniform across all dimensions?**
-   - Some dimensions may diverge more than others
-   - The EOS head's weight distribution may amplify certain dimensions
+3. **Does Candle's softmax implementation differ from PyTorch's for large attention matrices?**
+   - At step 36, the attention matrix is [1, 16, 1, 168] (168 = 132 + 36)
+   - Large matrices may accumulate differently
 
-4. **Does the KV cache show divergence at high positions?**
-   - Compare K[position=100] and V[position=100] between implementations
-   - Check if older cached values drift due to accumulated operations
+4. **Is there a dtype mismatch at any point in the Rust pipeline?**
+   - Python explicitly converts to float32 before FlowNet
+   - Are all Rust operations using consistent precision?
 
-5. **Would using a sliding window attention help?**
-   - If KV cache position is the issue, limiting to recent context may help
-   - Pocket TTS may not need full context for later generation steps
+5. **Could the BOS embedding handling introduce drift?**
+   - Python uses NaN replacement; Rust may compute differently
+   - Small differences in BOS handling propagate through all 36 steps
 
 ---
 
@@ -207,51 +241,67 @@ The Rust/Candle port of Pocket TTS has achieved **excellent results for short ph
 
 ### Official Kyutai
 - [GitHub: kyutai-labs/pocket-tts](https://github.com/kyutai-labs/pocket-tts) - Python reference
-- [docs/generate.md](https://github.com/kyutai-labs/pocket-tts/blob/main/docs/generate.md) - EOS parameters
-- [GitHub: kyutai-labs/moshi](https://github.com/kyutai-labs/moshi) - Production Rust Mimi
-- [Kyutai TTS Blog](https://kyutai.org/blog/2026-01-13-pocket-tts) - Technical overview
+- [GitHub: kyutai-labs/moshi](https://github.com/kyutai-labs/moshi) - Production Rust Mimi implementation
+- [DeepWiki: pocket-tts](https://deepwiki.com/kyutai-labs/pocket-tts) - Architecture analysis
 - [HuggingFace: kyutai/pocket-tts](https://huggingface.co/kyutai/pocket-tts) - Model card
 
 ### Precision and Numerical Stability
-- [ToluClassics Tutorial](https://github.com/ToluClassics/candle-tutorial) - PyTorch to Candle porting
-- [KV Caching Explained](https://huggingface.co/blog/not-lain/kv-caching) - HuggingFace tutorial
-- [Codegenes: KV Cache PyTorch](https://www.codegenes.net/blog/kv-cache-pytorch/) - Implementation details
+- [Candle Issue #3032: Precision differences](https://github.com/huggingface/candle/issues/3032) - Direct evidence of matmul differences
+- [ToluClassics Candle Tutorial](https://github.com/ToluClassics/candle-tutorial) - Porting best practices
+- [PyTorch Issue #66707: LayerNorm fp32](https://github.com/pytorch/pytorch/issues/66707) - LayerNorm precision
+- [PyTorch Numerical Accuracy Docs](https://docs.pytorch.org/docs/stable/notes/numerical_accuracy.html) - Official guidance
+
+### Autoregressive Error Propagation
+- [Closed-Loop Transformers Paper](https://arxiv.org/html/2511.21882v1) - Error propagation theory
+- [Lil'Log: LLM Inference Optimization](https://lilianweng.github.io/posts/2023-01-10-inference-optimization/) - KV cache details
 
 ### RoPE Position Encoding
-- [EleutherAI: Rotary Embeddings](https://blog.eleuther.ai/rotary-embeddings/) - Original blog
 - [LearnOpenCV: Inside RoPE](https://learnopencv.com/rope-position-embeddings/) - Practical guide
-- [RoFormer Paper](https://arxiv.org/abs/2104.09864) - Original paper
-
-### Streaming Audio
-- [Andrew Gibiansky: Streaming Audio Synthesis](https://andrew.gibiansky.com/streaming-audio-synthesis/) - Overlap-add tutorial
-- [cached_conv Library](https://acids-ircam.github.io/cached_conv/) - Post-training streaming
+- [EleutherAI: Rotary Embeddings](https://blog.eleuther.ai/rotary-embeddings/) - Numerical precision issues
 
 ### Local Documentation (Already in Repo!)
-- `docs/python-reference/ARCHITECTURE/flowlm.md` - FlowLM architecture
+- `docs/python-reference/ARCHITECTURE/flowlm.md` - FlowLM architecture details
 - `docs/python-reference/MODULES/rope.md` - RoPE implementation
-- `docs/python-reference/STREAMING/` - Streaming convolution algorithms
+- `docs/python-reference/MODULES/transformer.md` - Transformer attention details
 
 ---
 
 ## Critical Insight
 
-**The implementation is correct for short phrases (0.81 correlation). The EOS divergence for longer phrases is likely a precision accumulation issue, not an architectural bug.**
+**This is a cumulative precision error problem, not an architectural bug.**
 
-The path forward is:
-1. **Diagnostic first**: Log EOS logits at every step to understand the divergence pattern
-2. **Targeted fix**: Based on pattern, apply precision fixes to the specific operations causing drift
-3. **Fallback**: If unfixable, document max phrase length and implement chunking at app level
+The evidence strongly suggests:
+1. Individual operations are correct (verified for short sequences)
+2. Small precision differences between Candle and PyTorch exist (~1e-7 to 1e-5 per operation)
+3. These differences compound across 6 layers x 36 steps = 216 layer applications
+4. By step 36, the accumulated error produces measurably different hidden states
+5. The EOS divergence is a symptom, not the cause
 
-For iOS use cases, short phrases (notifications, UI feedback, brief messages) work excellently. Longer content can be chunked at the application layer if needed.
+**The fundamental limitation:** Candle and PyTorch will NEVER produce bit-identical results for deep networks with many autoregressive steps. The question is whether we can reduce the divergence enough to match EOS timing, or accept the current correlation and ship.
 
 ---
 
 ## Recommended Next Steps
 
-1. **Immediate**: Add step-by-step EOS logit logging to both Rust and Python
-2. **Compare**: Generate same medium phrase, plot logit trajectories
-3. **Identify**: Find the divergence inflection point
-4. **Fix**: Apply targeted precision improvements to the diverging operations
-5. **Validate**: Re-test with various phrase lengths
+1. **Immediate (Diagnostic):**
+   - Add per-layer hidden state logging at step 36 in both implementations
+   - Compare to identify first divergent layer
+   - If layer 0 diverges, focus on attention or MLP
+   - If later layers diverge more, it's cumulative error
 
-Time estimate: Diagnostic (1 session), fix attempt (1-2 sessions), or accept limitation and document.
+2. **If cumulative error confirmed:**
+   - Force Float32 throughout transformer
+   - Consider double-precision (Float64) for critical accumulations (softmax, layernorm)
+   - Accept that perfect match is impossible
+
+3. **Fallback (MVP):**
+   - Ship with current 0.74 correlation
+   - Document max recommended phrase length
+   - Implement chunking at application level for longer content
+   - The audio is intelligible and production-ready for many use cases
+
+**Time estimate:** Diagnostic (1 session), precision fixes (1-2 sessions), or accept limitation and document.
+
+---
+
+*Previous report archived as research-advisor-report-2.md*
