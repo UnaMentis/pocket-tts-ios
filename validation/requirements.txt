@@ -19,6 +19,7 @@ numpy>=2.0.0
 
 # Audio I/O and signal processing
 scipy>=1.10.0
+librosa>=0.10.0  # For MCD, spectral analysis, and advanced audio metrics
 
 # Progress bars for long operations
 tqdm>=4.65.0

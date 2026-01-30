@@ -119,6 +119,116 @@ jobs:
             validation/reference_outputs/
           if-no-files-found: ignore
 
+  quality-metrics:
+    name: Quality Metrics & Regression Check
+    runs-on: ubuntu-latest
+    needs: rust-build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Rust binary
+        uses: actions/download-artifact@v4
+        with:
+          name: test-tts-binary
+          path: target/release
+
+      - name: Make binary executable
+        run: chmod +x target/release/test-tts
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-quality-${{ hashFiles('validation/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-quality-
+
+      - name: Install Python dependencies
+        run: pip install -r validation/requirements.txt
+
+      - name: Check for model availability
+        id: model-check-quality
+        run: |
+          if [ -n "${{ secrets.MODEL_DOWNLOAD_URL }}" ]; then
+            echo "model_available=true" >> $GITHUB_OUTPUT
+          else
+            echo "model_available=false" >> $GITHUB_OUTPUT
+            echo "::notice::Model not available - quality metrics will be skipped"
+          fi
+
+      - name: Download model
+        if: steps.model-check-quality.outputs.model_available == 'true'
+        run: python3 scripts/download-model.py
+        env:
+          MODEL_DOWNLOAD_URL: ${{ secrets.MODEL_DOWNLOAD_URL }}
+        continue-on-error: true
+
+      - name: Generate test audio
+        if: steps.model-check-quality.outputs.model_available == 'true'
+        run: |
+          mkdir -p validation/quality_reports
+          ./target/release/test-tts \
+            --model-dir models/kyutai-pocket-ios \
+            --text "Hello, this is a test." \
+            --output validation/test_output_ci.wav
+
+      - name: Run quality metrics
+        if: steps.model-check-quality.outputs.model_available == 'true'
+        run: |
+          python3 validation/quality_metrics.py \
+            --audio validation/test_output_ci.wav \
+            --text "Hello, this is a test." \
+            --whisper-model base \
+            --output-json validation/quality_reports/quality_latest.json
+        continue-on-error: true
+
+      - name: Check for regressions (PR only)
+        if: |
+          github.event_name == 'pull_request' &&
+          steps.model-check-quality.outputs.model_available == 'true' &&
+          hashFiles('validation/baselines/baseline_v0.4.1.json') != ''
+        run: |
+          python3 validation/baseline_tracker.py \
+            --check-regression \
+            --baseline validation/baselines/baseline_v0.4.1.json \
+            --metrics validation/quality_reports/quality_latest.json
+
+      - name: Update baseline (main branch only)
+        if: |
+          github.ref == 'refs/heads/main' &&
+          steps.model-check-quality.outputs.model_available == 'true'
+        run: |
+          python3 validation/baseline_tracker.py \
+            --update-baseline \
+            --metrics validation/quality_reports/quality_latest.json
+
+      - name: Commit updated baseline (main branch only)
+        if: |
+          github.ref == 'refs/heads/main' &&
+          steps.model-check-quality.outputs.model_available == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add validation/baselines/
+          git diff --staged --quiet || git commit -m "chore: update quality baselines [skip ci]"
+          git push || true
+        continue-on-error: true
+
+      - name: Upload quality report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-report
+          path: |
+            validation/quality_reports/
+            validation/test_output_ci.wav
+          if-no-files-found: ignore
+
   unit-tests:
     name: Model Unit Tests
     runs-on: ubuntu-latest

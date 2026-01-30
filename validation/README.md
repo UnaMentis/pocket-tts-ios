@@ -204,6 +204,98 @@ python validation/compare_intermediates.py \
 
 Output shows cosine similarity, RMSE, and pinpoints where the largest differences occur.
 
+## Quality Metrics & Regression Detection (NEW)
+
+### Overview
+
+The validation suite now includes comprehensive audio quality metrics with baseline tracking to detect regressions. This is especially important since **waveform correlation is no longer meaningful** with random noise enabled (production mode).
+
+**Key insight**: Different random number generators produce different latent trajectories and different waveforms - both equally valid. We measure **what the audio sounds like**, not **what random numbers were used**.
+
+### Quality Metrics Tier System
+
+**Tier 1: Intelligibility** (Most Important)
+- **WER (Word Error Rate)** via Whisper ASR
+- Target: <5% = production quality
+- RNG-independent, validates actual user experience
+
+**Tier 2: Acoustic Quality**
+- **MCD (Mel-Cepstral Distortion)** - Spectral similarity
+- Target: <6 dB (with deterministic latents)
+- Measures acoustic similarity via MFCC distance
+
+**Tier 3: Signal Health**
+- **SNR (Signal-to-Noise Ratio)** - Target: >40 dB
+- **THD (Total Harmonic Distortion)** - Target: <1%
+- Detects artifacts and decoder issues
+
+**Tier 4: Spectral Features**
+- Spectral centroid, rolloff, flatness, zero-crossing rate
+- Validates timbre and frequency characteristics
+
+### Quick Start: Quality Checks
+
+**Run comprehensive quality check:**
+```bash
+cd validation
+./run_quality_check.sh \
+  --reference python_ref.wav \
+  --rust ../rust_output.wav \
+  --text "Hello, this is a test."
+```
+
+**Check for regressions (against baseline):**
+```bash
+./run_quality_check.sh \
+  --reference python_ref.wav \
+  --rust ../rust_output.wav \
+  --text "Hello, this is a test." \
+  --baseline baselines/baseline_v0.4.1.json \
+  --check-regression
+```
+
+**Save new baseline:**
+```bash
+./run_quality_check.sh \
+  --reference python_ref.wav \
+  --rust ../rust_output.wav \
+  --text "Hello, this is a test." \
+  --save-baseline baselines/baseline_v0.4.2.json
+```
+
+### Documentation
+
+- **[docs/QUALITY_METRICS.md](docs/QUALITY_METRICS.md)** - Complete metric definitions and targets
+- **[docs/REGRESSION_DETECTION.md](docs/REGRESSION_DETECTION.md)** - Usage guide for baseline tracking
+
+### Files (Quality Metrics)
+
+| File | Purpose |
+|------|---------|
+| `quality_metrics.py` | Core metrics implementation (WER, MCD, SNR, THD, spectral) |
+| `baseline_tracker.py` | Baseline storage and regression detection |
+| `run_quality_check.sh` | Orchestration script for quality checks |
+| `baselines/` | Stored baseline metrics per version |
+| `quality_reports/` | Generated quality reports (JSON) |
+
+### CI Integration
+
+Quality checks run automatically on pull requests and fail if regressions are detected:
+
+```yaml
+# PR: Check for regressions (BLOCKING)
+- name: Quality regression check
+  run: |
+    cd validation
+    ./run_quality_check.sh --check-regression
+
+# Main: Update baseline automatically
+- name: Update baseline
+  run: |
+    cd validation
+    python baseline_tracker.py --update-baseline
+```
+
 ## STT Models for Round-Trip Testing
 
 The validation uses two speech-to-text models for cross-validation:
