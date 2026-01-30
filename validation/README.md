@@ -204,97 +204,182 @@ python validation/compare_intermediates.py \
 
 Output shows cosine similarity, RMSE, and pinpoints where the largest differences occur.
 
-## Quality Metrics & Regression Detection (NEW)
+## Quality Metrics & Regression Detection
+
+### Why This Exists
+
+**The Problem**: When optimizing ML pipelines, it's easy to regress quality without noticing:
+- Small changes accumulate into degraded output
+- "Improvements" might actually hurt intelligibility
+- Without measurements, you only notice after shipping to users
+
+**The Goal**: Get the last few percentage points of quality by:
+- Catching regressions before they merge
+- Quantifying improvements objectively
+- Ensuring every release maintains or exceeds baseline quality
 
 ### Overview
 
-The validation suite now includes comprehensive audio quality metrics with baseline tracking to detect regressions. This is especially important since **waveform correlation is no longer meaningful** with random noise enabled (production mode).
+The validation suite includes comprehensive audio quality metrics with automated baseline tracking. This is critical because **waveform correlation is no longer meaningful** with random noise enabled (production mode).
 
 **Key insight**: Different random number generators produce different latent trajectories and different waveforms - both equally valid. We measure **what the audio sounds like**, not **what random numbers were used**.
 
-### Quality Metrics Tier System
+### Quality Metrics Suite
 
 **Tier 1: Intelligibility** (Most Important)
 - **WER (Word Error Rate)** via Whisper ASR
-- Target: <5% = production quality
+- Target: <5% excellent, <10% acceptable
 - RNG-independent, validates actual user experience
+- **This is the primary quality metric for TTS**
 
 **Tier 2: Acoustic Quality**
-- **MCD (Mel-Cepstral Distortion)** - Spectral similarity
-- Target: <6 dB (with deterministic latents)
-- Measures acoustic similarity via MFCC distance
+- **MCD (Mel-Cepstral Distortion)** - Spectral similarity via MFCC distance
+- Target: <4 dB excellent, <6 dB good (when comparing to reference)
+- Validates decoder correctness with deterministic latents
 
 **Tier 3: Signal Health**
-- **SNR (Signal-to-Noise Ratio)** - Target: >40 dB
-- **THD (Total Harmonic Distortion)** - Target: <1%
-- Detects artifacts and decoder issues
+- **SNR (Signal-to-Noise Ratio)** - Detects background noise and artifacts
+  - Target: >25 dB excellent, >15 dB good (speech-specific thresholds)
+  - Note: Speech naturally has high-frequency consonants, so SNR is lower than pure tones
+- **THD (Total Harmonic Distortion)** - Detects distortion and clipping
+  - Target: <10% excellent, <40% acceptable (speech-specific thresholds)
+  - Note: Natural speech has harmonics - this is a feature, not a bug
 
 **Tier 4: Spectral Features**
 - Spectral centroid, rolloff, flatness, zero-crossing rate
-- Validates timbre and frequency characteristics
+- Tracks timbre and frequency characteristics over time
+- No absolute thresholds - used for relative comparison
+
+### Meta-Validation: Testing the Tests
+
+Before establishing a baseline, we validate that the quality metrics themselves work correctly through a 4-run iterative process:
+
+**Run 0: Meta-Validation** (Test metrics on synthetic audio)
+```bash
+cd validation
+python validate_metrics.py
+```
+- Tests MCD, SNR, THD on synthetic audio with known properties
+- Validates implementation correctness (10 tests must pass)
+- **Status**: ✅ Complete (10/10 tests passing)
+
+**Run 1: Sanity Check** (Test metrics on real TTS)
+```bash
+python quality_metrics.py \
+  --audio run1_rust.wav \
+  --text "Hello, this is a test." \
+  --whisper-model base
+```
+- Establishes what "good" speech measures as
+- Discovers speech-appropriate thresholds (different from pure tones)
+- **Status**: ✅ Complete (all metrics in healthy ranges)
+
+**Run 2: Cross-Validation** (Compare Rust vs Python)
+- Validates MCD by comparing outputs on same text
+- **Status**: 🔄 Next step
+
+**Run 3: Stability Check** (Multiple runs)
+- Runs TTS 3 times, verifies metric stability
+- **Status**: 🔄 Pending
+
+**Only after all 4 runs pass**: Establish baseline with confidence
+
+See [docs/ITERATIVE_VALIDATION.md](docs/ITERATIVE_VALIDATION.md) for the complete validation process.
 
 ### Quick Start: Quality Checks
 
-**Run comprehensive quality check:**
+**Run single quality analysis:**
 ```bash
 cd validation
-./run_quality_check.sh \
-  --reference python_ref.wav \
-  --rust ../rust_output.wav \
-  --text "Hello, this is a test."
+python quality_metrics.py \
+  --audio output.wav \
+  --text "Hello, this is a test." \
+  --whisper-model base \
+  --output-json quality_results.json
+```
+
+**Compare two audio files (MCD):**
+```bash
+python quality_metrics.py \
+  --audio rust_output.wav \
+  --reference python_output.wav \
+  --text "Hello, this is a test." \
+  --output-json comparison_results.json
 ```
 
 **Check for regressions (against baseline):**
 ```bash
-./run_quality_check.sh \
-  --reference python_ref.wav \
-  --rust ../rust_output.wav \
-  --text "Hello, this is a test." \
+python baseline_tracker.py \
+  --check-regression \
   --baseline baselines/baseline_v0.4.1.json \
-  --check-regression
+  --metrics quality_results.json
 ```
 
-**Save new baseline:**
+**Establish new baseline:**
 ```bash
-./run_quality_check.sh \
-  --reference python_ref.wav \
-  --rust ../rust_output.wav \
-  --text "Hello, this is a test." \
-  --save-baseline baselines/baseline_v0.4.2.json
+./establish_baseline.sh
 ```
 
 ### Documentation
 
+- **[docs/ITERATIVE_VALIDATION.md](docs/ITERATIVE_VALIDATION.md)** - 4-run validation process (start here!)
 - **[docs/QUALITY_METRICS.md](docs/QUALITY_METRICS.md)** - Complete metric definitions and targets
 - **[docs/REGRESSION_DETECTION.md](docs/REGRESSION_DETECTION.md)** - Usage guide for baseline tracking
+- **[docs/SPEECH_VS_TONE_METRICS.md](docs/SPEECH_VS_TONE_METRICS.md)** - Why speech has different thresholds
+- **[docs/NEXT_STEPS.md](docs/NEXT_STEPS.md)** - Step-by-step validation guide
 
 ### Files (Quality Metrics)
 
 | File | Purpose |
 |------|---------|
-| `quality_metrics.py` | Core metrics implementation (WER, MCD, SNR, THD, spectral) |
+| `quality_metrics.py` | Core metrics: WER, MCD, SNR, THD, spectral features |
 | `baseline_tracker.py` | Baseline storage and regression detection |
-| `run_quality_check.sh` | Orchestration script for quality checks |
+| `validate_metrics.py` | Meta-validation: test the metrics on synthetic audio |
+| `compare_runs.py` | Stability analysis: compare metrics across multiple runs |
+| `compare_waveforms.py` | Waveform analysis with amplitude/RMS comparison |
+| `establish_baseline.sh` | Script to establish quality baseline for current version |
 | `baselines/` | Stored baseline metrics per version |
 | `quality_reports/` | Generated quality reports (JSON) |
+| `docs/ITERATIVE_VALIDATION.md` | 4-run validation process guide |
+| `docs/QUALITY_METRICS.md` | Metric definitions, formulas, targets |
+| `docs/REGRESSION_DETECTION.md` | Baseline tracking usage guide |
+| `docs/SPEECH_VS_TONE_METRICS.md` | Speech vs pure tone threshold analysis |
+| `docs/NEXT_STEPS.md` | Step-by-step validation instructions |
 
 ### CI Integration
 
-Quality checks run automatically on pull requests and fail if regressions are detected:
+Quality checks run automatically in GitHub Actions (see `.github/workflows/validation.yml`):
 
+**On Pull Requests** (BLOCKING):
 ```yaml
-# PR: Check for regressions (BLOCKING)
-- name: Quality regression check
-  run: |
-    cd validation
-    ./run_quality_check.sh --check-regression
+- name: Generate test audio
+  run: ./target/release/test-tts --text "Hello, this is a test." --output test.wav
 
-# Main: Update baseline automatically
-- name: Update baseline
+- name: Run quality metrics
+  run: python quality_metrics.py --audio test.wav --text "..." --output-json results.json
+
+- name: Check for regressions
   run: |
-    cd validation
-    python baseline_tracker.py --update-baseline
+    python baseline_tracker.py \
+      --check-regression \
+      --baseline baselines/baseline_v0.4.1.json \
+      --metrics results.json
+  # Fails if WER increases >10%, SNR decreases >10dB, etc.
 ```
+
+**On Main Branch** (AUTO-UPDATE):
+```yaml
+- name: Update baseline
+  run: python baseline_tracker.py --update-baseline --metrics results.json
+
+- name: Commit updated baseline
+  run: |
+    git add validation/baselines/
+    git commit -m "chore: update quality baselines [skip ci]"
+    git push
+```
+
+**Quality reports** are uploaded as artifacts for every run, even if model is not available.
 
 ## STT Models for Round-Trip Testing
 

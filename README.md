@@ -150,9 +150,93 @@ Run latency tests to validate performance:
 
 See [docs/LATENCY_TESTING.md](docs/LATENCY_TESTING.md) for detailed benchmarking instructions.
 
-## Quality
+## Audio Quality Assurance 🎯
 
-This project uses comprehensive quality infrastructure:
+**Why**: When optimizing a complex ML pipeline like TTS, it's easy to introduce regressions—small changes that degrade speech quality in subtle ways. Without objective measurements, you might only notice quality degradation after it's too late, or worse, ship degraded audio to users.
+
+**The Challenge**: Getting the last few percentage points of quality requires rigorous validation:
+- Is the Rust decoder producing identical output to Python?
+- Do optimizations improve or degrade intelligibility?
+- Are we introducing noise, distortion, or artifacts?
+
+**Our Solution**: Comprehensive audio quality metrics with automated regression detection.
+
+### Quality Metrics Suite
+
+We measure five key aspects of TTS output quality:
+
+| Metric | What It Measures | Target |
+|--------|------------------|--------|
+| **WER** (Word Error Rate) | Intelligibility via Whisper ASR | <5% excellent |
+| **MCD** (Mel-Cepstral Distortion) | Spectral similarity to reference | <6 dB good |
+| **SNR** (Signal-to-Noise Ratio) | Signal health and cleanliness | >25 dB excellent |
+| **THD** (Total Harmonic Distortion) | Audio distortion level | <40% acceptable |
+| **Spectral** (Centroid, Rolloff, Flatness) | Frequency characteristics | Tracked |
+
+### Automated Regression Detection
+
+Every code change is validated automatically:
+
+1. **Generate Test Audio** - Run full TTS pipeline on standard phrases
+2. **Compute Quality Metrics** - Measure all 5 dimensions
+3. **Compare to Baseline** - Detect regressions automatically
+4. **Block on Failure** - PRs with quality regressions cannot merge
+
+```bash
+# Run quality check locally
+cd validation
+python quality_metrics.py \
+  --audio output.wav \
+  --text "Hello, this is a test." \
+  --whisper-model base \
+  --output-json quality_results.json
+
+# Compare to baseline
+python baseline_tracker.py \
+  --check-regression \
+  --baseline baselines/baseline_v0.4.1.json \
+  --metrics quality_results.json
+```
+
+### CI Integration
+
+Quality metrics run automatically in GitHub Actions:
+
+- **On Pull Requests**: Check for regressions (blocking)
+- **On Main Branch**: Update baseline after successful merge
+- **Quality Reports**: Uploaded as artifacts for every run
+
+See [validation/README.md](validation/README.md) for detailed usage.
+
+### Meta-Validation: Testing the Tests
+
+Before trusting quality metrics, we validate them against known cases:
+
+- ✅ **Run 0** (Meta-validation): Test metrics on synthetic audio with known properties
+- ✅ **Run 1** (Sanity check): Verify metrics produce reasonable values on real TTS
+- 🔄 **Run 2** (Cross-validation): Compare Rust vs Python outputs
+- 🔄 **Run 3** (Stability check): Verify metrics are stable across runs
+
+Only after all validation runs pass do we establish the quality baseline.
+
+**Docs**:
+- [validation/docs/QUALITY_METRICS.md](validation/docs/QUALITY_METRICS.md) - Metric definitions and formulas
+- [validation/docs/ITERATIVE_VALIDATION.md](validation/docs/ITERATIVE_VALIDATION.md) - Validation process
+- [validation/docs/REGRESSION_DETECTION.md](validation/docs/REGRESSION_DETECTION.md) - Usage guide
+
+### Why This Matters
+
+This system enables us to:
+- **Catch regressions early** - Before they reach production
+- **Optimize confidently** - Know if changes help or hurt quality
+- **Track progress** - Quantify improvements over time
+- **Ship with confidence** - Every release is validated against baseline
+
+The last few percentage points of quality matter—they're the difference between "good enough" and "production ready."
+
+## Development Quality
+
+This project uses comprehensive development infrastructure:
 
 - **Pre-commit hooks**: rustfmt, clippy, gitleaks, tests
 - **CI/CD pipelines**: Lint, test, coverage, iOS build, security scan
