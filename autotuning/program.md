@@ -7,22 +7,69 @@ You are an autonomous AI research agent optimizing the audio quality of a Rust/C
 - **Project**: Pocket TTS iOS — a Rust port of Kyutai's Pocket TTS
 - **Working directory**: The root of the pocket-tts-ios repository
 - **Quality metrics**: WER, MCD, SNR, THD, correlation → composite score [0, 1]
-- **Results log**: `autotuning/results.tsv` — append-only experiment history
+- **Results log**: `autotuning/results.tsv` — append-only experiment history (flat TSV)
+- **Experiment memory**: `autotuning/memory.json` — structured memory with failure tracking, mixed results, and learned rules
 - **Best config**: `autotuning/configs/best.json` — current champion
+- **Knowledge index**: `docs/KNOWLEDGE_INDEX.md` — distilled lessons from the entire porting effort (read this first!)
 
 ## The Loop
 
 You work indefinitely. Each iteration follows this cycle:
 
 ```
-1. ANALYZE   — Review results.tsv, identify patterns, form hypothesis
-2. MODIFY    — Change ONE thing (config param, code change, etc.)
-3. EVALUATE  — Run: python autotuning/autotune.py --phase baseline (or custom eval)
-4. COMPARE   — Is the composite score higher than the current best?
-5. DECIDE    — If improved: git commit. If not: git reset --hard HEAD.
-6. LOG       — Record result and reasoning in results.tsv
-7. REPEAT    — Go to step 1
+0. REMEMBER  — Read memory summary: python autotuning/memory.py
+              Check dead ends (don't repeat them) and promising leads
+1. ANALYZE   — Review results.tsv + memory, identify patterns, form hypothesis
+2. CHECK     — Has this been tried before? Check dead_ends and experiments in memory
+3. MODIFY    — Change ONE thing (config param, code change, etc.)
+4. EVALUATE  — Run: python autotuning/autotune.py --phase baseline (or custom eval)
+5. COMPARE   — Is the composite score higher than the current best?
+6. DECIDE    — If improved: git commit. If not: git reset --hard HEAD.
+7. RECORD    — Record result with FULL CONTEXT to memory (see Memory Protocol below)
+8. REPEAT    — Go to step 0
 ```
+
+## Memory Protocol
+
+The memory system (`autotuning/memory.json`) is your long-term knowledge. It survives across sessions and prevents you from repeating mistakes.
+
+### At the Start of Each Session
+1. Read `python autotuning/memory.py` to get the full summary
+2. Read `docs/KNOWLEDGE_INDEX.md` for architectural context and past lessons
+3. Note all **dead ends** — these are things that were tried and failed. Do NOT retry them unless you have a fundamentally different approach
+4. Note all **promising leads** — these had mixed results (improved some metrics, regressed others). They may be worth revisiting with a complementary change
+
+### After Each Experiment (MANDATORY)
+When using the autotuning script, memory is recorded automatically. But if you make manual code changes, record to memory by running:
+```python
+from autotuning.memory import ExperimentMemory
+mem = ExperimentMemory(Path("autotuning/memory.json"))
+mem.record(
+    experiment_id="manual_001",
+    config={...},
+    composite_score=0.75,
+    per_metric={"wer": 0.05, "mcd": 4.2, "snr_db": 42.0, "thd_percent": 0.8},
+    decision="discarded",  # or "kept" or "crashed"
+    hypothesis="What you expected to happen",
+    reasoning="Why you tried this",
+    changes_made="Brief description of what changed",
+    metric_deltas={"wer": -0.02, "mcd": +0.3},  # vs previous best
+)
+```
+
+### Recording Learned Rules
+When you discover a general principle (not just a specific experiment result), record it:
+```python
+mem.add_rule(
+    rule="Lower temperature improves WER but hurts MCD above threshold X",
+    evidence="Experiments sweep_temp_005 through sweep_temp_012"
+)
+```
+
+### What Gets Classified as What
+- **Dead end**: Pure regression (all metrics worse or net negative with no positives). Don't retry.
+- **Promising lead**: Mixed result (some metrics improved, others regressed). Worth revisiting — maybe a complementary change can preserve the gains while fixing the regressions.
+- **Rule learned**: A generalizable principle, not tied to one experiment.
 
 ## Rules
 
@@ -32,6 +79,7 @@ You work indefinitely. Each iteration follows this cycle:
 3. **One change at a time.** Do not bundle multiple independent changes.
 4. **Always use fixed seed** (seed=42) for reproducible comparison.
 5. **Log every experiment** to results.tsv, even failures and discards.
+6. **Always check memory before trying something.** If it's a dead end, skip it. If it's a promising lead, build on it.
 
 ### Strategic Guidelines
 1. Start with high-impact parameters: `temperature`, `consistency_steps`
@@ -128,4 +176,7 @@ Write a summary of your findings to `autotuning/REPORT.md` with:
 - Remaining bottlenecks
 - Suggested next directions
 
-## Work indefinitely. Be methodical. Trust the numbers.
+Also ensure `autotuning/memory.json` is up to date with all learned rules and promising leads.
+The next agent session will read the memory summary first — make it useful for them.
+
+## Work indefinitely. Be methodical. Trust the numbers. Learn from the memory.

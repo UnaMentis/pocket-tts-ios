@@ -40,6 +40,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent / "validation"))
 
 from scorer import compute_composite_score, score_from_metrics_dict
+from memory import ExperimentMemory
 
 # ─── Test Corpus ───────────────────────────────────────────────────────────
 
@@ -301,6 +302,7 @@ class AutoTuner:
         self.runner = TTSRunner(project_dir, model_dir)
         self.evaluator = QualityEvaluator(project_dir)
         self.log = ExperimentLog(output_dir / "results.tsv")
+        self.memory = ExperimentMemory(output_dir / "memory.json")
 
     def _get_reference_audio(self, phrase_id: str) -> Optional[Path]:
         """Get reference audio for a phrase if available."""
@@ -315,6 +317,8 @@ class AutoTuner:
         config: Dict[str, Any],
         experiment_id: str,
         description: str = "",
+        hypothesis: str = "",
+        reasoning: str = "",
     ) -> Dict:
         """
         Run full evaluation of a config across all test phrases.
@@ -392,6 +396,32 @@ class AutoTuner:
             "description": description,
         })
 
+        # Compute per-metric deltas from current best for memory system
+        best = self.memory.data.get("best", {})
+        best_per_metric = best.get("per_metric", {}) if best else {}
+        per_metric = {}
+        metric_deltas = {}
+
+        if avg_wer is not None:
+            per_metric["wer"] = avg_wer
+            if "wer" in best_per_metric:
+                metric_deltas["wer"] = avg_wer - best_per_metric["wer"]
+        if avg_mcd is not None:
+            per_metric["mcd"] = avg_mcd
+            if "mcd" in best_per_metric:
+                metric_deltas["mcd"] = avg_mcd - best_per_metric["mcd"]
+        if avg_snr is not None:
+            per_metric["snr_db"] = avg_snr
+            if "snr_db" in best_per_metric:
+                metric_deltas["snr_db"] = avg_snr - best_per_metric["snr_db"]
+        if avg_thd is not None:
+            per_metric["thd_percent"] = avg_thd
+            if "thd_percent" in best_per_metric:
+                metric_deltas["thd_percent"] = avg_thd - best_per_metric["thd_percent"]
+
+        result["per_metric"] = per_metric
+        result["metric_deltas"] = metric_deltas
+
         return result
 
     def _avg_metric(
@@ -421,7 +451,26 @@ class AutoTuner:
         }
 
         self.runner.ensure_built()
-        result = self.evaluate_config(config, "baseline", "baseline: default configuration")
+        result = self.evaluate_config(
+            config, "baseline", "baseline: default configuration",
+            hypothesis="Establish baseline with default parameters",
+            reasoning="Starting point for all future comparisons",
+        )
+
+        # Record in memory
+        self.memory.set_baseline(
+            result["composite_score"], config, result.get("per_metric", {})
+        )
+        self.memory.record(
+            experiment_id="baseline",
+            config=config,
+            composite_score=result["composite_score"],
+            per_metric=result.get("per_metric", {}),
+            decision="kept",
+            hypothesis="Establish baseline with default parameters",
+            reasoning="Starting point for all future comparisons",
+            changes_made="Default config: temp=0.7, top_p=0.9, consistency=2, speed=1.0",
+        )
 
         # Save baseline
         baseline_path = self.output_dir / "baselines" / "initial.json"
@@ -477,11 +526,25 @@ class AutoTuner:
 
             print(f"  [{i+1}/{len(values)}] {param_name}={value} ...", end=" ", flush=True)
 
-            result = self.evaluate_config(config, exp_id, desc)
+            hyp = f"Testing if {param_name}={value} improves quality"
+            result = self.evaluate_config(config, exp_id, desc, hypothesis=hyp, reasoning=f"Systematic sweep of {param_name}")
             sweep_results.append(result)
 
             score = result["composite_score"]
             delta = score - best_score
+            decision = "kept" if score > best_score else "discarded"
+
+            self.memory.record(
+                experiment_id=exp_id,
+                config=config,
+                composite_score=score,
+                per_metric=result.get("per_metric", {}),
+                decision=decision,
+                hypothesis=hyp,
+                reasoning=f"Systematic sweep of {param_name}",
+                changes_made=f"{param_name}={value}",
+                metric_deltas=result.get("metric_deltas", {}),
+            )
 
             if score > best_score:
                 print(f"score={score:.4f} (+{delta:.4f}) *** NEW BEST ***")
@@ -563,11 +626,26 @@ class AutoTuner:
             exp_id = f"opt_{start_exp + i:04d}"
             desc = f"optimize: {', '.join(perturbation_desc)}"
 
-            print(f"  [{i+1}/{iterations}] {', '.join(perturbation_desc)} ...", end=" ", flush=True)
+            changes_str = ", ".join(perturbation_desc)
+            hyp = f"Random perturbation of {changes_str} might find better optimum"
+            print(f"  [{i+1}/{iterations}] {changes_str} ...", end=" ", flush=True)
 
-            result = self.evaluate_config(config, exp_id, desc)
+            result = self.evaluate_config(config, exp_id, desc, hypothesis=hyp, reasoning="Joint optimization random search")
             score = result["composite_score"]
             delta = score - best_score
+            decision = "kept" if score > best_score else "discarded"
+
+            self.memory.record(
+                experiment_id=exp_id,
+                config=config,
+                composite_score=score,
+                per_metric=result.get("per_metric", {}),
+                decision=decision,
+                hypothesis=hyp,
+                reasoning="Joint optimization random search",
+                changes_made=changes_str,
+                metric_deltas=result.get("metric_deltas", {}),
+            )
 
             if score > best_score:
                 improvements += 1
@@ -635,6 +713,16 @@ class AutoTuner:
                 if k != "composite_score":
                     print(f"    {k}: {v}")
         print()
+
+        # Print memory summary if available
+        if self.memory.data.get("experiments"):
+            dead = len(self.memory.data.get("dead_ends", []))
+            leads = len(self.memory.data.get("promising_leads", []))
+            rules = len(self.memory.data.get("rules_learned", []))
+            print(f"  Memory: {dead} dead ends, {leads} promising leads, {rules} rules learned")
+            if leads > 0:
+                print(f"  Run `python autotuning/memory.py` for full memory summary")
+            print()
 
 
 def main():
