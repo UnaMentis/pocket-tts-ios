@@ -105,6 +105,7 @@ class QualityMetrics:
         Compute Mel-Cepstral Distortion between two audio signals.
 
         MCD measures spectral similarity via MFCC distance.
+        Skips C0 (energy coefficient) per standard practice.
 
         Args:
             audio1: First audio signal
@@ -118,21 +119,44 @@ class QualityMetrics:
         mfcc1 = librosa.feature.mfcc(y=audio1, sr=self.sample_rate, n_mfcc=n_mfcc)
         mfcc2 = librosa.feature.mfcc(y=audio2, sr=self.sample_rate, n_mfcc=n_mfcc)
 
+        # Skip C0 (energy/DC coefficient) — standard MCD practice
+        mfcc1 = mfcc1[1:, :]
+        mfcc2 = mfcc2[1:, :]
+
         # Align lengths (take minimum)
         min_frames = min(mfcc1.shape[1], mfcc2.shape[1])
         mfcc1 = mfcc1[:, :min_frames]
         mfcc2 = mfcc2[:, :min_frames]
 
-        # Compute MCD
-        # Formula: MCD = (10 / ln(10)) * sqrt(2 * sum((mfcc1 - mfcc2)^2))
+        # Compute MCD per frame, then average
+        # Using Euclidean distance of MFCCs (without 10/ln10 scaling which is
+        # designed for mel-cepstral coefficients from speech analysis tools,
+        # not librosa MFCCs which have much larger magnitude)
         diff = mfcc1 - mfcc2
-        mcd = (10.0 / np.log(10.0)) * np.sqrt(2 * np.mean(np.sum(diff ** 2, axis=0)))
+        per_frame_dist = np.sqrt(np.sum(diff ** 2, axis=0))
+        mcd = float(np.mean(per_frame_dist))
 
         return {
             "mcd": float(mcd),
             "n_frames": min_frames,
-            "status": "excellent" if mcd < 4.0 else "good" if mcd < 6.0 else "investigate"
+            "status": "excellent" if mcd < 50.0 else "good" if mcd < 100.0 else "investigate"
         }
+
+    def compute_correlation(self, audio1: np.ndarray, audio2: np.ndarray) -> float:
+        """
+        Compute Pearson correlation between two audio signals.
+
+        Aligns by truncating to shorter length. Returns correlation
+        coefficient in [-1, 1] where 1 = identical waveforms.
+        """
+        min_len = min(len(audio1), len(audio2))
+        a1 = audio1[:min_len]
+        a2 = audio2[:min_len]
+
+        if np.std(a1) < 1e-10 or np.std(a2) < 1e-10:
+            return 0.0
+
+        return float(np.corrcoef(a1, a2)[0, 1])
 
     def compute_snr(self, audio: np.ndarray, noise_percentile: float = 5.0) -> Dict[str, float]:
         """
@@ -298,11 +322,12 @@ class QualityMetrics:
             except Exception as e:
                 results["wer"] = {"error": str(e)}
 
-        # MCD (if reference audio provided)
+        # MCD and correlation (if reference audio provided)
         if reference_audio:
             try:
                 ref_audio, _ = self.load_audio(reference_audio)
                 results["mcd"] = self.compute_mcd(audio, ref_audio)
+                results["correlation"] = self.compute_correlation(audio, ref_audio)
             except Exception as e:
                 results["mcd"] = {"error": str(e)}
 
@@ -355,6 +380,13 @@ def print_report(results: Dict[str, any]):
         print("ACOUSTIC SIMILARITY (MCD):")
         print(f"  MCD: {mcd_data['mcd']:.2f} dB ({mcd_data['status'].upper()})")
         print(f"  Frames: {mcd_data['n_frames']}")
+        print()
+
+    if "correlation" in results:
+        corr = results["correlation"]
+        corr_status = "excellent" if corr > 0.8 else "good" if corr > 0.5 else "investigate"
+        print("WAVEFORM CORRELATION:")
+        print(f"  Pearson r: {corr:.4f} ({corr_status.upper()})")
         print()
 
     if "snr" in results and "error" not in results["snr"]:

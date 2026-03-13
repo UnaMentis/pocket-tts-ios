@@ -27,22 +27,33 @@ from typing import Any, Dict, List, Optional
 class ExperimentMemory:
     """Structured experiment memory with failure tracking and mixed-result highlighting."""
 
+    DEFAULT_SCHEMA = {
+        "version": 2,
+        "created": None,
+        "bootstrapped": False,
+        "baseline": None,
+        "best": None,
+        "experiments": [],
+        "dead_ends": [],
+        "promising_leads": [],
+        "rules_learned": [],
+        "safe_ranges": {},
+        "interaction_rules": [],
+        "methodology_guidance": {},
+        "sensitivity_rankings": {},
+    }
+
     def __init__(self, path: Path):
         self.path = path
         if path.exists():
             with open(path) as f:
                 self.data = json.load(f)
+            # Migrate v1 → v2: add new fields if missing
+            for key, default in self.DEFAULT_SCHEMA.items():
+                if key not in self.data:
+                    self.data[key] = default
         else:
-            self.data = {
-                "version": 1,
-                "created": datetime.now().isoformat(),
-                "baseline": None,
-                "best": None,
-                "experiments": [],
-                "dead_ends": [],
-                "promising_leads": [],
-                "rules_learned": [],
-            }
+            self.data = {**self.DEFAULT_SCHEMA, "created": datetime.now().isoformat()}
 
     def save(self):
         self.data["last_updated"] = datetime.now().isoformat()
@@ -184,6 +195,56 @@ class ExperimentMemory:
         })
         self.save()
 
+    def set_safe_range(self, param: str, safe_min: float, optimal: float, safe_max: float, notes: str = ""):
+        """Record a safe parameter range based on evidence."""
+        self.data["safe_ranges"][param] = {
+            "min": safe_min,
+            "optimal": optimal,
+            "max": safe_max,
+            "notes": notes,
+        }
+        self.save()
+
+    def get_safe_range(self, param: str) -> Optional[Dict]:
+        """Get the safe range for a parameter, if known."""
+        return self.data.get("safe_ranges", {}).get(param)
+
+    def add_interaction_rule(self, rule: str, params: List[str], evidence: str):
+        """Record an interaction between parameters."""
+        self.data["interaction_rules"].append({
+            "rule": rule,
+            "params": params,
+            "evidence": evidence,
+            "timestamp": datetime.now().isoformat(),
+        })
+        self.save()
+
+    def set_methodology_guidance(self, bottleneck: str, guidance: Dict[str, str]):
+        """Record what to do when a specific metric is the bottleneck."""
+        self.data["methodology_guidance"][bottleneck] = {
+            **guidance,
+            "timestamp": datetime.now().isoformat(),
+        }
+        self.save()
+
+    def set_sensitivity(self, param: str, gradient: float, evidence: str = ""):
+        """Record sensitivity of composite score to a parameter."""
+        self.data["sensitivity_rankings"][param] = {
+            "gradient": gradient,
+            "evidence": evidence,
+            "timestamp": datetime.now().isoformat(),
+        }
+        self.save()
+
+    def is_bootstrapped(self) -> bool:
+        """Check if memory has been bootstrapped with project knowledge."""
+        return self.data.get("bootstrapped", False)
+
+    def mark_bootstrapped(self):
+        """Mark memory as bootstrapped."""
+        self.data["bootstrapped"] = True
+        self.save()
+
     def was_tried(self, changes_description: str) -> Optional[Dict]:
         """
         Check if something similar was already tried.
@@ -230,12 +291,50 @@ class ExperimentMemory:
                 lines.append(f"- {k}: {v}")
             lines.append("")
 
+        # Safe ranges
+        safe_ranges = self.data.get("safe_ranges", {})
+        if safe_ranges:
+            lines.append("## Safe Parameter Ranges")
+            for param, r in safe_ranges.items():
+                lines.append(f"- **{param}**: [{r['min']}, {r['max']}] optimal={r['optimal']}" +
+                             (f" — {r['notes']}" if r.get('notes') else ""))
+            lines.append("")
+
         # Rules learned
         rules = self.data.get("rules_learned", [])
         if rules:
             lines.append("## Rules Learned")
             for r in rules:
                 lines.append(f"- {r['rule']} (evidence: {r['evidence']})")
+            lines.append("")
+
+        # Interaction rules
+        interactions = self.data.get("interaction_rules", [])
+        if interactions:
+            lines.append("## Interaction Rules")
+            for ir in interactions:
+                lines.append(f"- [{', '.join(ir['params'])}] {ir['rule']}")
+            lines.append("")
+
+        # Methodology guidance
+        guidance = self.data.get("methodology_guidance", {})
+        if guidance:
+            lines.append("## Methodology Guidance (by bottleneck)")
+            for bottleneck, g in guidance.items():
+                lines.append(f"- **{bottleneck}**: {g.get('summary', '')}")
+                if g.get("tier1"):
+                    lines.append(f"  - Tier 1: {g['tier1']}")
+                if g.get("tier2"):
+                    lines.append(f"  - Tier 2: {g['tier2']}")
+            lines.append("")
+
+        # Sensitivity rankings
+        sensitivity = self.data.get("sensitivity_rankings", {})
+        if sensitivity:
+            ranked = sorted(sensitivity.items(), key=lambda x: x[1]["gradient"], reverse=True)
+            lines.append("## Sensitivity Rankings (highest impact first)")
+            for param, s in ranked:
+                lines.append(f"- {param}: gradient={s['gradient']:.4f}")
             lines.append("")
 
         # Promising leads (mixed results worth revisiting)

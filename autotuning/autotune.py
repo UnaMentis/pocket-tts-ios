@@ -44,32 +44,33 @@ from scorer import compute_composite_score, score_from_metrics_dict
 from memory import ExperimentMemory
 
 # ─── Test Corpus ───────────────────────────────────────────────────────────
+# Phrases aligned with Python reference audio in validation/reference_outputs/
+# so MCD and correlation can be computed against ground truth.
 
 TEST_PHRASES = [
     {
-        "id": "short_greeting",
-        "text": "Hello, how are you today?",
+        "id": "phrase_00",
+        "text": "Hello, this is a test of the Pocket TTS system.",
         "category": "short",
+        "reference_wav": "phrase_00.wav",
     },
     {
-        "id": "medium_numbers",
-        "text": "The temperature is 72 degrees Fahrenheit.",
-        "category": "medium",
+        "id": "phrase_01",
+        "text": "The quick brown fox jumps over the lazy dog.",
+        "category": "pangram",
+        "reference_wav": "phrase_01.wav",
     },
     {
-        "id": "long_narrative",
-        "text": "In the beginning, there was nothing but darkness and silence, until a single spark of light appeared.",
-        "category": "long",
+        "id": "phrase_02",
+        "text": "One two three four five six seven eight nine ten.",
+        "category": "numbers",
+        "reference_wav": "phrase_02.wav",
     },
     {
-        "id": "question_prosody",
-        "text": "Did you really think that was going to work?",
-        "category": "prosody",
-    },
-    {
-        "id": "technical",
-        "text": "The API returns a JSON response with the authentication token.",
-        "category": "technical",
+        "id": "phrase_03",
+        "text": "How are you doing today?",
+        "category": "question",
+        "reference_wav": "phrase_03.wav",
     },
 ]
 
@@ -307,10 +308,17 @@ class AutoTuner:
 
     def _get_reference_audio(self, phrase_id: str) -> Optional[Path]:
         """Get reference audio for a phrase if available."""
+        # First check explicit reference_dir
         if self.reference_dir:
             ref_path = self.reference_dir / f"{phrase_id}.wav"
             if ref_path.exists():
                 return ref_path
+
+        # Fall back to validation/reference_outputs/ (Python ground truth)
+        default_ref = self.project_dir / "validation" / "reference_outputs" / f"{phrase_id}.wav"
+        if default_ref.exists():
+            return default_ref
+
         return None
 
     def evaluate_config(
@@ -558,6 +566,22 @@ class AutoTuner:
         print(f"\nSweep complete. Best {param_name} = {best_config[param_name]}")
         print(f"Best score: {best_score:.4f}")
 
+        # Compute and store sensitivity for this parameter
+        if len(sweep_results) >= 2:
+            scores = [r["composite_score"] for r in sweep_results]
+            param_values = [values[i] for i in range(len(sweep_results))]
+            if len(set(param_values)) > 1:
+                gradients = [
+                    abs(scores[j] - scores[j-1]) / max(abs(param_values[j] - param_values[j-1]), 1e-10)
+                    for j in range(1, len(scores))
+                ]
+                avg_gradient = float(np.mean(gradients))
+                self.memory.set_sensitivity(
+                    param_name, avg_gradient,
+                    evidence=f"Sweep of {len(values)} values, score range [{min(scores):.4f}, {max(scores):.4f}]"
+                )
+                print(f"  Sensitivity |dScore/d{param_name}| = {avg_gradient:.4f}")
+
         return {
             "param": param_name,
             "best_value": best_config[param_name],
@@ -569,14 +593,14 @@ class AutoTuner:
 
     def run_optimize(self, iterations: int = 100) -> Dict:
         """
-        Joint optimization via random search with shrinking neighborhood.
+        Joint optimization with score-aware adaptive perturbation.
 
-        Uses a simple strategy:
+        Strategy:
         1. Start from best known config
-        2. Perturb 1-2 parameters randomly
-        3. Evaluate
-        4. Keep if improved, discard if not
-        5. Shrink perturbation radius over time
+        2. Perturb parameters within safe ranges from memory
+        3. Perturbation magnitude adapts to current score level
+        4. Single parameter changes in refinement mode (score > 0.50)
+        5. Keep if improved, discard if not
         """
         print("=" * 60)
         print(f"PHASE 3: JOINT OPTIMIZATION ({iterations} iterations)")
@@ -594,14 +618,23 @@ class AutoTuner:
         improvements = 0
 
         for i in range(iterations):
-            # Decay factor: perturbations get smaller over time
-            decay = 1.0 - (i / iterations) * 0.7  # 1.0 → 0.3
+            # Score-aware perturbation scaling
+            if best_score >= 0.90:
+                max_perturbation_frac = 0.02  # 2% of range — very fine
+            elif best_score >= 0.70:
+                max_perturbation_frac = 0.05  # 5% — refinement
+            elif best_score >= 0.50:
+                max_perturbation_frac = 0.10  # 10% — moderate
+            else:
+                max_perturbation_frac = 0.20  # 20% — broad exploration
 
-            # Perturb 1-2 random parameters
+            # In refinement mode, only change 1 parameter at a time
+            num_params = 1 if best_score >= 0.50 else np.random.randint(1, 3)
+
             config = deepcopy(best_config)
             params_to_perturb = np.random.choice(
                 list(PARAM_SPACE.keys()),
-                size=np.random.randint(1, 3),
+                size=min(num_params, len(PARAM_SPACE)),
                 replace=False,
             )
 
@@ -610,16 +643,21 @@ class AutoTuner:
                 space = PARAM_SPACE[param]
                 current = config.get(param, space["default"])
 
+                # Respect safe ranges from memory if available
+                safe = self.memory.get_safe_range(param)
+                safe_min = safe["min"] if safe else space["min"]
+                safe_max = safe["max"] if safe else space["max"]
+
                 if space["type"] == "int":
                     delta = np.random.choice([-1, 0, 1])
-                    new_val = int(np.clip(current + delta, space["min"], space["max"]))
+                    new_val = int(np.clip(current + delta, safe_min, safe_max))
                 else:
-                    range_size = space["max"] - space["min"]
-                    delta = np.random.normal(0, range_size * 0.1 * decay)
-                    new_val = round(float(np.clip(current + delta, space["min"], space["max"])), 4)
+                    range_size = safe_max - safe_min
+                    delta = np.random.normal(0, range_size * max_perturbation_frac)
+                    new_val = round(float(np.clip(current + delta, safe_min, safe_max)), 4)
                     # Snap to step grid
                     new_val = round(new_val / space["step"]) * space["step"]
-                    new_val = round(float(np.clip(new_val, space["min"], space["max"])), 4)
+                    new_val = round(float(np.clip(new_val, safe_min, safe_max)), 4)
 
                 config[param] = new_val
                 perturbation_desc.append(f"{param}={new_val}")
@@ -628,10 +666,10 @@ class AutoTuner:
             desc = f"optimize: {', '.join(perturbation_desc)}"
 
             changes_str = ", ".join(perturbation_desc)
-            hyp = f"Random perturbation of {changes_str} might find better optimum"
-            print(f"  [{i+1}/{iterations}] {changes_str} ...", end=" ", flush=True)
+            hyp = f"Adaptive perturbation ({max_perturbation_frac*100:.0f}% range) of {changes_str}"
+            print(f"  [{i+1}/{iterations}] {changes_str} (scale={max_perturbation_frac*100:.0f}%) ...", end=" ", flush=True)
 
-            result = self.evaluate_config(config, exp_id, desc, hypothesis=hyp, reasoning="Joint optimization random search")
+            result = self.evaluate_config(config, exp_id, desc, hypothesis=hyp, reasoning=f"Joint optimization, score-aware perturbation (scale={max_perturbation_frac})")
             score = result["composite_score"]
             delta = score - best_score
             decision = "kept" if score > best_score else "discarded"
@@ -643,7 +681,7 @@ class AutoTuner:
                 per_metric=result.get("per_metric", {}),
                 decision=decision,
                 hypothesis=hyp,
-                reasoning="Joint optimization random search",
+                reasoning=f"Joint optimization, score-aware perturbation (scale={max_perturbation_frac})",
                 changes_made=changes_str,
                 metric_deltas=result.get("metric_deltas", {}),
             )
