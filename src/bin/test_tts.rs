@@ -291,10 +291,18 @@ fn main() {
 
     // Build TTS config from CLI args
     let mut tts_config = TTSConfig::default();
-    if let Some(v) = temperature { tts_config.temperature = v; }
-    if let Some(v) = top_p { tts_config.top_p = v; }
-    if let Some(v) = consistency_steps { tts_config.consistency_steps = v; }
-    if let Some(v) = speed { tts_config.speed = v; }
+    if let Some(v) = temperature {
+        tts_config.temperature = v;
+    }
+    if let Some(v) = top_p {
+        tts_config.top_p = v;
+    }
+    if let Some(v) = consistency_steps {
+        tts_config.consistency_steps = v;
+    }
+    if let Some(v) = speed {
+        tts_config.speed = v;
+    }
     if let Some(v) = seed {
         tts_config.seed = v;
         tts_config.use_fixed_seed = true;
@@ -315,7 +323,13 @@ fn main() {
             extended_validation,
         );
     } else {
-        run_single_phrase(&model_dir, &output_path, &test_text, export_latents_path.as_ref().map(|v| &**v), &tts_config);
+        run_single_phrase(
+            &model_dir,
+            &output_path,
+            &test_text,
+            export_latents_path.as_ref().map(|v| &**v),
+            &tts_config,
+        );
     }
 }
 
@@ -458,7 +472,13 @@ fn run_validation_mode(model_dir: &Path, output_dir: &Path, json_report: Option<
 }
 
 /// Run single phrase mode (original behavior)
-fn run_single_phrase(model_dir: &Path, output_path: &Path, test_text: &str, export_latents_path: Option<&Path>, config: &TTSConfig) {
+fn run_single_phrase(
+    model_dir: &Path,
+    output_path: &Path,
+    test_text: &str,
+    export_latents_path: Option<&Path>,
+    config: &TTSConfig,
+) {
     println!("Configuration:");
     println!("  Model directory: {}", model_dir.display());
     println!("  Output file: {}", output_path.display());
