@@ -182,7 +182,7 @@ def main():
     parser.add_argument("--wer", type=float, help="Word Error Rate (0-1)")
     parser.add_argument("--mcd", type=float, help="Mel-Cepstral Distortion (dB)")
     parser.add_argument("--snr", type=float, help="Signal-to-Noise Ratio (dB)")
-    parser.add_argument("--thd", type=float, help="Total Harmonic Distortion (%)")
+    parser.add_argument("--thd", type=float, help="Total Harmonic Distortion (percent)")
     parser.add_argument("--correlation", type=float, help="Pearson correlation (0-1)")
     parser.add_argument("--output-json", help="Save score to JSON file")
 
