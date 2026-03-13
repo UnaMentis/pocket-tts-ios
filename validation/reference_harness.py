@@ -8,6 +8,7 @@ These outputs serve as ground truth for validating the Rust/Candle port.
 Usage:
     python reference_harness.py --output-dir ./reference_outputs
     python reference_harness.py --output-dir ./reference_outputs --with-whisper
+    python reference_harness.py --output-dir ./reference_outputs --capture-noise --seed 42
 """
 
 import argparse
@@ -15,7 +16,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 import numpy as np
 import scipy.io.wavfile as wavfile
@@ -30,30 +31,118 @@ TEST_PHRASES = [
 ]
 
 
-def generate_reference_outputs(output_dir: Path, voice: str = "alba") -> dict:
-    """Generate reference audio and latents using official Pocket TTS."""
+class NoiseCapture:
+    """Captures noise tensors from torch.nn.init.normal_ during FlowNet generation.
+
+    When capture_noise=True, this hooks into PyTorch's normal_ initialization
+    to intercept the noise tensors used by FlowNet at each generation step.
+    These captured tensors can be loaded into Rust to eliminate RNG differences
+    and measure pure implementation correlation.
+    """
+
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled
+        self.captured: List[np.ndarray] = []
+        self._original_normal_ = None
+
+    def start(self):
+        """Install the hook."""
+        if not self.enabled:
+            return
+        import torch
+        self._original_normal_ = torch.nn.init.normal_
+
+        captured = self.captured
+
+        def capturing_normal_(tensor, mean=0.0, std=1.0):
+            result = self._original_normal_(tensor, mean=mean, std=std)
+            # Only capture noise tensors that look like FlowNet noise
+            # Shape is typically [1, 1, 32] or [1, seq, 32]
+            if tensor.dim() == 3 and tensor.shape[-1] == 32:
+                captured.append(tensor.detach().cpu().numpy().copy())
+            return result
+
+        torch.nn.init.normal_ = capturing_normal_
+
+    def stop(self):
+        """Remove the hook and restore original function."""
+        if not self.enabled or self._original_normal_ is None:
+            return
+        import torch
+        torch.nn.init.normal_ = self._original_normal_
+        self._original_normal_ = None
+
+    def save(self, output_dir: Path, phrase_id: str):
+        """Save captured noise tensors to .npy files."""
+        if not self.enabled or not self.captured:
+            return 0
+
+        noise_dir = output_dir / "noise"
+        noise_dir.mkdir(parents=True, exist_ok=True)
+
+        for step, noise in enumerate(self.captured):
+            npy_path = noise_dir / f"{phrase_id}_noise_step_{step:03d}.npy"
+            np.save(str(npy_path), noise)
+
+        count = len(self.captured)
+        self.captured.clear()
+        return count
+
+
+def generate_reference_outputs(output_dir: Path, voice: str = "alba",
+                                seed: Optional[int] = None,
+                                capture_noise: bool = False) -> dict:
+    """Generate reference audio and latents using official Pocket TTS.
+
+    Args:
+        output_dir: Directory to save outputs
+        voice: Voice name to use
+        seed: If set, seed PyTorch RNG before each phrase for deterministic noise
+        capture_noise: If True, capture FlowNet noise tensors as .npy files
+    """
+    import torch
     from pocket_tts import TTSModel
 
     print("Loading Pocket TTS model...")
     model = TTSModel.load_model()
     print(f"  Sample rate: {model.sample_rate} Hz")
 
+    if seed is not None:
+        print(f"  Using seed: {seed} (deterministic mode)")
+    if capture_noise:
+        print(f"  Capturing FlowNet noise tensors")
+
     print(f"Getting voice state for '{voice}'...")
     voice_state = model.get_state_for_audio_prompt(voice)
+
+    noise_capture = NoiseCapture(enabled=capture_noise)
 
     results = {
         "model_version": "official_pocket_tts",
         "sample_rate": model.sample_rate,
         "voice": voice,
+        "seed": seed,
+        "noise_captured": capture_noise,
         "phrases": []
     }
 
     for i, phrase in enumerate(tqdm(TEST_PHRASES, desc="Generating audio")):
         phrase_id = f"phrase_{i:02d}"
 
+        # Set seed before each phrase for deterministic generation
+        if seed is not None:
+            torch.manual_seed(seed + i)
+
+        # Start noise capture
+        noise_capture.start()
+
         # Generate audio
         audio = model.generate_audio(voice_state, phrase)
         audio_np = audio.numpy()
+
+        # Stop noise capture and save
+        noise_capture.stop()
+        noise_count = noise_capture.save(output_dir, phrase_id)
 
         # Save audio as WAV
         wav_path = output_dir / f"{phrase_id}.wav"
@@ -81,11 +170,16 @@ def generate_reference_outputs(output_dir: Path, voice: str = "alba") -> dict:
             "audio_stats": audio_stats,
         }
 
+        if noise_count > 0:
+            phrase_result["noise_tensors"] = noise_count
+            phrase_result["noise_dir"] = "noise"
+
         results["phrases"].append(phrase_result)
 
+        noise_info = f", {noise_count} noise tensors" if noise_count > 0 else ""
         print(f"  {phrase_id}: {audio_stats['samples']} samples, "
               f"{audio_stats['duration_sec']:.2f}s, "
-              f"max={audio_stats['max_amplitude']:.4f}")
+              f"max={audio_stats['max_amplitude']:.4f}{noise_info}")
 
     return results
 
@@ -157,6 +251,17 @@ def main():
         help="Run Whisper transcription to establish baseline WER"
     )
     parser.add_argument(
+        "--capture-noise",
+        action="store_true",
+        help="Capture FlowNet noise tensors as .npy files for Rust correlation testing"
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed for deterministic generation (e.g., 42). Required with --capture-noise."
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Regenerate outputs even if they exist"
@@ -178,8 +283,17 @@ def main():
     print(f"Test phrases: {len(TEST_PHRASES)}")
     print()
 
+    # Validate flags
+    if args.capture_noise and args.seed is None:
+        print("WARNING: --capture-noise without --seed means noise is non-deterministic.")
+        print("         Use --seed 42 for reproducible noise tensors.")
+
     # Generate reference outputs
-    results = generate_reference_outputs(args.output_dir, args.voice)
+    results = generate_reference_outputs(
+        args.output_dir, args.voice,
+        seed=args.seed,
+        capture_noise=args.capture_noise,
+    )
 
     # Optionally run Whisper
     if args.with_whisper:

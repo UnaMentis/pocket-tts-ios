@@ -481,25 +481,150 @@ Additionally, the **legacy token-chunked streaming API was removed** (`start_str
 
 ---
 
+## The Autotuning System (March 2026)
+
+With the TTS pipeline stable and producing intelligible audio, attention shifted from *implementation correctness* to *systematic quality optimization*. The project needed a way to explore the configuration space methodically rather than through one-off experiments.
+
+### The Autoresearch Architecture
+
+Inspired by Karpathy's autoresearch pattern, the project built a complete autotuning infrastructure:
+
+- **`autotune.py`** — Orchestrator implementing the core loop: modify → evaluate → keep/discard → repeat. Supports three phases: baseline establishment, single-parameter sweeps, and joint optimization with adaptive perturbation.
+- **`scorer.py`** — Composite quality scoring reducing five metrics (WER, MCD, SNR, THD, correlation) to a single scalar in [0, 1]. Normalization curves calibrated from actual Rust-vs-Python TTS comparison data.
+- **`memory.py`** — Persistent experiment memory tracking dead ends, promising leads, safe parameter ranges, interaction rules, and sensitivity rankings. Prevents the agent from repeating failed experiments and guides it toward productive exploration.
+
+The system uses a 4-phrase test corpus aligned with Python reference audio, enabling MCD (spectral similarity) and correlation measurements against ground truth. A memory-bootstrapping script pre-loads project history so the agent starts with accumulated knowledge rather than from scratch.
+
+This represented a sixth agent role in the multi-agent architecture: the **Autotuning Agent**, operating autonomously within a structured feedback loop.
+
+### The Deterministic Seeding Fix
+
+Building the autotuning system immediately exposed a critical problem: **results weren't reproducible.** Running the same configuration twice produced different audio, different metrics, and different scores. The autotuner couldn't distinguish parameter changes from random noise.
+
+Investigation revealed that the `--seed` CLI parameter was a **complete no-op**. It was parsed, stored in `TTSConfig`, and never used. The seed field existed since the beginning of the project—it just never reached `FlowNet::generate()`, where `Tensor::randn()` used Candle's unseeded global RNG.
+
+The fix required working around a Candle 0.8.4 limitation: no per-call seed API for `Tensor::randn()`. The solution used Rust's `rand` crate with `SeedableRng`:
+
+```rust
+let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+let normal = Normal::new(0.0f32, std);
+let values: Vec<f32> = (0..n_elements).map(|_| normal.sample(&mut rng)).collect();
+Tensor::from_vec(values, shape, device)?
+```
+
+Each generation step derives a unique-but-deterministic seed via `seed.wrapping_add(step as u64)`, ensuring different noise at each step while maintaining full reproducibility.
+
+**Verification**: Two runs with `--seed 42` now produce byte-identical WAV files. Without `--seed`, the system still uses Candle's default unseeded RNG. This was the necessary foundation for reliable autotuning—and, as it turned out, for something much more important.
+
+---
+
+## Losing the Plot (March 2026)
+
+This section documents a wrong turn that lasted six weeks—and the course correction that followed. It's included not despite being a mistake, but because recognizing and correcting it was one of the project's most important milestones.
+
+### How the Primary Metric Was Abandoned
+
+The project's mission statement, written at the very beginning, was clear:
+
+> *"The goal isn't just 'working' audio; it's **near-identical waveform output** (correlation > 0.95) compared to the Python reference."*
+
+The project reached **0.81 correlation** at v0.4.0—a 500x improvement from the initial 0.0016, and tantalizingly close to the 0.95 target. Then v0.4.1 enabled random noise in FlowNet to match Python's production behavior. Correlation dropped to approximately zero.
+
+The response was not to fix the noise mismatch. Instead, correlation was declared **"CLOSED — METRIC NO LONGER APPLICABLE"** in PORTING_STATUS.md. The justification: "With random noise enabled, waveform correlation is no longer a meaningful metric since different random number generators produce different (but equally valid) latent trajectories."
+
+This reasoning was locally sound—Python uses PyTorch's Mersenne Twister RNG, Rust uses Candle's thread-local RNG, and they produce incompatible noise sequences. But the conclusion was wrong. Rather than asking "how do we match the noise?", the project asked "how do we score without correlation?"
+
+### The Cascade
+
+Each subsequent step made sense in isolation but drifted further from the mission:
+
+| Date | Correlation | What Happened |
+|------|-------------|---------------|
+| Jan 24, 2026 | **0.81** | v0.4.0 Beta — peak correlation |
+| Jan 27, 2026 | ~0.0 | v0.4.1 enabled random noise, declared correlation "CLOSED" |
+| Mar 12, 2026 | ~0.0 | Built autotuning scoring system *without* correlation |
+| Mar 13, 2026 (AM) | ~0.0 | Removed correlation from composite scoring entirely |
+
+The autotuning system was built to optimize perceptual quality metrics—WER (intelligibility), MCD (spectral similarity), SNR (signal quality), THD (distortion)—treating them as primary objectives rather than diagnostics. Temperature sweeps, consistency step experiments, and joint optimization runs accumulated. Scores improved from 0.46 to 0.73 through WER normalization fixes and MCD recalibration.
+
+But these improvements were optimizing the wrong thing. The system was getting better at *sounding reasonable* while making no progress toward *matching the reference implementation*.
+
+### The Course Correction
+
+The turning point came from a direct challenge: *why should we accept near-zero correlation?*
+
+The argument was simple and devastating:
+
+- **If correlation = 1.0, every other metric is automatically perfect.** You've matched the reference. WER, MCD, SNR, THD are identical by definition.
+- **If correlation < 1.0, the other metrics tell you WHERE you're diverging.** They're diagnostic tools, not objectives.
+- **You can have perfect WER, good MCD, good SNR, and still be producing completely different audio.** The other metrics can pass while the implementation is fundamentally wrong.
+- **Removing the metric that shows the problem doesn't fix the problem.**
+
+This insight reframed everything. Correlation isn't one metric among many—it's THE metric. The others exist to explain *why* correlation falls short, not to replace it.
+
+### The Root Cause Is Solvable
+
+The ~0.0 correlation isn't an inherent limitation. It's a noise mismatch:
+
+1. The reference audio in `validation/reference_outputs/` was generated by `reference_harness.py` with **no seed**—Python's unseeded `torch.randn()` produced the noise
+2. Rust uses a completely different RNG (Candle's `Tensor::randn()` or `StdRng`)
+3. Different noise → different latent trajectories → different waveforms → correlation ≈ 0
+
+The fix: capture the exact noise tensors Python used during reference generation, save them as artifacts, and load them in Rust instead of generating new noise. This eliminates the RNG difference entirely, and any remaining correlation gap measures pure implementation differences—which is exactly what we want to know.
+
+With deterministic seeding already implemented, the infrastructure is in place. The path from here:
+
+1. **Re-generate Python references with noise tensor dumps** — hook FlowNet to save per-step noise as `.npy` files
+2. **Add noise-loading mode to Rust's FlowNet** — load pre-generated noise instead of sampling
+3. **Measure correlation with matched noise** — should return to ~0.81 range
+4. **Systematically fix remaining divergences** — frame count, amplitude, precision accumulation
+5. **Each fix produces a measurable correlation improvement** — back to the systematic methodology that worked before
+
+### What This Means for Autotuning
+
+The autotuning system isn't wasted work—it just needs to be resequenced:
+
+- **Phase 1 (now)**: Implementation correctness — maximize correlation with matched noise
+- **Phase 2 (after correlation > 0.95)**: Quality optimization — tune parameters for best audio quality
+- **Phase 3 (production)**: Deployment optimization — tune for iOS-specific constraints
+
+The infrastructure (memory system, composite scoring, parameter sweeps) is all reusable. The scoring weights just need to be restructured with correlation as the dominant signal.
+
+---
+
 ## The Story Continues
 
-As of January 2026, Pocket TTS iOS has achieved its **first public beta release (v0.4.0)**. The journey from 0.0016 correlation to 0.81 correlation for short phrases represents a remarkable 500x improvement through systematic debugging.
+As of March 2026, Pocket TTS iOS is in an interesting position. The TTS pipeline is production-ready—audio is intelligible, streaming works with ~200ms TTFA, and the iOS XCFramework is deployed. But the project's original mission of > 0.95 waveform correlation was prematurely closed rather than completed.
+
+The detour through perceptual-metric autotuning wasn't wasted. It produced real infrastructure (the autoresearch loop, experiment memory, quality metrics) and real insights (temperature 0.3 minimizes distortion, consistency steps have zero impact, WER normalization matters). But the most valuable outcome was the recognition that **the project had drifted from its primary objective, and the courage to correct course.**
 
 **What's been accomplished:**
 - All 14 major architectural issues identified and fixed
 - Latents match Python exactly (cosine similarity = 1.0)
-- Full streaming Mimi decoder implementation
-- Replicate padding for first-frame context
-- Production-quality iOS XCFramework
+- Full streaming Mimi decoder with replicate padding
+- Production-quality iOS XCFramework with 8 voices
+- Deterministic seeding for reproducible results
+- Complete autotuning infrastructure with persistent experiment memory
+- Honest recognition of a wrong turn and clear path back
+
+**What was built (same day):**
+- Noise tensor capture infrastructure in `reference_harness.py` (`--capture-noise --seed 42`)
+- Noise tensor loading in Rust (`FlowNet::generate()` accepts `noise_override`)
+- Full pipeline threading through FlowLM and PocketTTSModel
+- Test binary `--noise-dir` flag for correlation testing
+- Correlation restored as primary metric in `scorer.py` (50% weight)
+- Waveform correlation reopened in `PORTING_STATUS.md`
 
 **What remains:**
-- EOS detection refinement for longer phrases (precision accumulation issue)
-- Final push toward 0.95 correlation target
-- Potential chunking strategy for very long content
-
-The goal of 0.95 correlation is within reach. The infrastructure is in place. The methodology is proven. The multi-agent architecture continues to provide fresh perspectives when needed.
+- Run reference harness with `--capture-noise --seed 42` on a machine with the Python model
+- Use captured noise tensors to re-establish ~0.81 correlation baseline
+- Fix frame count mismatch (43 vs 45 frames)
+- Fix amplitude mismatch (59-77% of Python reference)
+- Push toward 0.95 correlation target
+- Then: quality optimization with autotuning
 
 **Key metrics from the journey:**
+
 | Milestone | Correlation | Date |
 |-----------|-------------|------|
 | Initial attempt | 0.0016 | January 2026 |
@@ -507,9 +632,13 @@ The goal of 0.95 correlation is within reach. The infrastructure is in place. Th
 | With streaming Mimi | 0.64 | January 2026 |
 | With replicate padding | **0.81** | January 2026 |
 | **v0.4.0 Beta Release** | **0.81** | January 24, 2026 |
+| v0.4.1 (noise enabled) | ~0.0 | January 27, 2026 |
+| Autotuning v1 (correlation removed) | ~0.0 | March 12, 2026 |
+| **Course correction** (correlation reinstated) | — | March 13, 2026 |
+| **Noise capture infrastructure built** | — | March 13, 2026 |
 
-This project also produced a reusable multi-agent collaboration pattern documented in `docs/prompts/`. The five-agent architecture (Implementation, Cleanup Auditor, Research Advisor, Verification, Progress Tracker) can be adapted for future ML porting projects.
+This project also produced a reusable multi-agent collaboration pattern documented in `docs/prompts/`. The six-agent architecture (Implementation, Cleanup Auditor, Research Advisor, Verification, Progress Tracker, Autotuning) can be adapted for future ML porting projects.
 
 ---
 
-*This document captures the story of the project as of 2026-01-24. For current technical status, see [PORTING_STATUS.md](../PORTING_STATUS.md). For Python reference documentation, see [docs/python-reference/](python-reference/). For agent prompts, see [docs/prompts/](prompts/). For audit reports, see [docs/audit/](audit/). For quality infrastructure, see [docs/quality/](quality/). For changelog, see [CHANGELOG.md](../CHANGELOG.md).*
+*This document captures the story of the project as of 2026-03-13. For current technical status, see [PORTING_STATUS.md](../PORTING_STATUS.md). For Python reference documentation, see [docs/python-reference/](python-reference/). For agent prompts, see [docs/prompts/](prompts/). For audit reports, see [docs/audit/](audit/). For quality infrastructure, see [docs/quality/](quality/). For changelog, see [CHANGELOG.md](../CHANGELOG.md).*

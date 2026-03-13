@@ -6,6 +6,8 @@
 
 use candle_core::{Device, Result, Tensor};
 use candle_nn::{Linear, Module, VarBuilder};
+use rand::SeedableRng;
+use rand_distr::{Distribution, Normal};
 
 use super::layer_norm::{layer_norm_no_affine, LayerNorm};
 
@@ -317,7 +319,12 @@ impl FlowNet {
     /// * `hidden` - Conditioning from transformer [batch, seq, 1024]
     /// * `num_steps` - Number of flow steps (more = higher quality)
     /// * `temperature` - Sampling temperature
-    pub fn generate(&self, hidden: &Tensor, num_steps: usize, temperature: f32, device: &Device) -> Result<Tensor> {
+    /// * `seed` - Optional seed for deterministic noise generation
+    /// * `noise_override` - Optional pre-captured noise tensor (for correlation testing)
+    ///   When provided, this tensor is used instead of sampling random noise.
+    ///   This allows Rust to use the exact same noise as Python used when generating
+    ///   reference audio, eliminating RNG differences from the correlation measurement.
+    pub fn generate(&self, hidden: &Tensor, num_steps: usize, temperature: f32, device: &Device, seed: Option<u64>, noise_override: Option<&Tensor>) -> Result<Tensor> {
         let (batch_size, seq_len, _) = hidden.dims3()?;
 
         // Get conditioning embedding
@@ -334,10 +341,27 @@ impl FlowNet {
         eprintln!("[FlowNet] conditioning: mean={:.4}, std={:.4}", c_mean, c_std);
 
         // Start from noise (x_0 in LSD notation)
-        // Python uses: std = temp^0.5, and samples from Normal(0, std)
-        // Python default temperature = 0.7, so std ≈ 0.8367
-        let std = temperature.sqrt();
-        let mut current = Tensor::randn(0f32, std, (batch_size, seq_len, self.config.latent_dim), device)?;
+        // If noise_override is provided (from captured Python noise tensors),
+        // use it directly to eliminate RNG differences for correlation testing.
+        let mut current = if let Some(noise) = noise_override {
+            eprintln!("[FlowNet] Using pre-captured noise tensor (shape: {:?})", noise.dims());
+            noise.clone()
+        } else {
+            // Python uses: std = temp^0.5, and samples from Normal(0, std)
+            // Python default temperature = 0.7, so std ≈ 0.8367
+            let std = temperature.sqrt();
+            if let Some(s) = seed {
+                // Deterministic: use seeded RNG for reproducible results
+                let mut rng = rand::rngs::StdRng::seed_from_u64(s);
+                let normal = Normal::new(0.0f32, std).map_err(|e| candle_core::Error::Msg(format!("Normal distribution error: {}", e)))?;
+                let n_elements = batch_size * seq_len * self.config.latent_dim;
+                let values: Vec<f32> = (0..n_elements).map(|_| normal.sample(&mut rng)).collect();
+                Tensor::from_vec(values, (batch_size, seq_len, self.config.latent_dim), device)?
+            } else {
+                // Non-deterministic: use Candle's default RNG
+                Tensor::randn(0f32, std, (batch_size, seq_len, self.config.latent_dim), device)?
+            }
+        };
 
         // LSD decoding: integrate from s=0 toward t=1
         // For i in 0..num_steps:

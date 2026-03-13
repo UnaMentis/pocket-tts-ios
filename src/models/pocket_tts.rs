@@ -28,6 +28,10 @@ pub struct PocketTTSModel {
     device: Device,
     config: TTSConfig,
     custom_voice: Option<VoiceEmbedding>,
+    /// Pre-loaded noise tensors for correlation testing.
+    /// When set, these are used instead of random noise during FlowNet generation.
+    /// Each tensor corresponds to one autoregressive step.
+    noise_tensors: Option<Vec<Tensor>>,
 }
 
 impl PocketTTSModel {
@@ -73,6 +77,7 @@ impl PocketTTSModel {
             device: device.clone(),
             config: TTSConfig::default(),
             custom_voice: None,
+            noise_tensors: None,
         })
     }
 
@@ -91,6 +96,124 @@ impl PocketTTSModel {
     /// Clear custom voice (use built-in)
     pub fn clear_custom_voice(&mut self) {
         self.custom_voice = None;
+    }
+
+    /// Load pre-captured noise tensors from a directory for correlation testing.
+    ///
+    /// The directory should contain .npy files named like:
+    /// `phrase_XX_noise_step_000.npy`, `phrase_XX_noise_step_001.npy`, etc.
+    ///
+    /// These tensors are used instead of random noise during FlowNet generation,
+    /// eliminating RNG differences between Python and Rust for correlation measurement.
+    pub fn load_noise_tensors(&mut self, noise_dir: &Path, phrase_id: &str) -> std::result::Result<usize, PocketTTSError> {
+        let mut tensors = Vec::new();
+        let mut step = 0;
+
+        loop {
+            let npy_path = noise_dir.join(format!("{}_noise_step_{:03}.npy", phrase_id, step));
+            if !npy_path.exists() {
+                break;
+            }
+
+            // Load .npy file
+            let data = std::fs::read(&npy_path)
+                .map_err(|e| PocketTTSError::ModelLoadFailed(format!("Failed to read noise file {:?}: {}", npy_path, e)))?;
+
+            // Parse .npy header to get shape and find data offset
+            let tensor = Self::parse_npy_f32(&data, &self.device)
+                .map_err(|e| PocketTTSError::ModelLoadFailed(format!("Failed to parse noise file {:?}: {}", npy_path, e)))?;
+
+            tensors.push(tensor);
+            step += 1;
+        }
+
+        let count = tensors.len();
+        if count > 0 {
+            eprintln!("[PocketTTS] Loaded {} noise tensors from {:?} for {}", count, noise_dir, phrase_id);
+            self.noise_tensors = Some(tensors);
+        } else {
+            eprintln!("[PocketTTS] WARNING: No noise tensors found for {} in {:?}", phrase_id, noise_dir);
+            self.noise_tensors = None;
+        }
+        Ok(count)
+    }
+
+    /// Clear pre-loaded noise tensors
+    pub fn clear_noise_tensors(&mut self) {
+        self.noise_tensors = None;
+    }
+
+    /// Parse a NumPy .npy file containing float32 data into a Tensor
+    fn parse_npy_f32(data: &[u8], device: &Device) -> std::result::Result<Tensor, String> {
+        // Validate magic number
+        if data.len() < 10 || &data[0..6] != b"\x93NUMPY" {
+            return Err("Invalid .npy magic number".to_string());
+        }
+
+        let major = data[6];
+        let _minor = data[7];
+
+        // Get header length
+        let header_len = if major == 1 {
+            u16::from_le_bytes([data[8], data[9]]) as usize
+        } else if major == 2 {
+            u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize
+        } else {
+            return Err(format!("Unsupported .npy version {}", major));
+        };
+
+        let header_start = if major == 1 { 10 } else { 12 };
+        let data_start = header_start + header_len;
+
+        // Parse header to extract shape
+        let header_str = std::str::from_utf8(&data[header_start..data_start])
+            .map_err(|e| format!("Invalid header UTF-8: {}", e))?;
+
+        // Extract shape from header dict, e.g., "'shape': (1, 1, 32)"
+        let shape = Self::parse_npy_shape(header_str)?;
+
+        // Read float32 data
+        let float_data = &data[data_start..];
+        let n_floats = float_data.len() / 4;
+        let values: Vec<f32> = (0..n_floats)
+            .map(|i| f32::from_le_bytes([
+                float_data[i * 4],
+                float_data[i * 4 + 1],
+                float_data[i * 4 + 2],
+                float_data[i * 4 + 3],
+            ]))
+            .collect();
+
+        Tensor::from_vec(values, shape.as_slice(), device)
+            .map_err(|e| format!("Tensor creation failed: {}", e))
+    }
+
+    /// Parse shape tuple from .npy header string
+    fn parse_npy_shape(header: &str) -> std::result::Result<Vec<usize>, String> {
+        // Find 'shape': (...) in the header dict
+        let shape_start = header.find("'shape':")
+            .or_else(|| header.find("\"shape\":"))
+            .ok_or("No 'shape' field in .npy header")?;
+
+        let paren_start = header[shape_start..].find('(')
+            .ok_or("No '(' in shape")? + shape_start;
+        let paren_end = header[paren_start..].find(')')
+            .ok_or("No ')' in shape")? + paren_start;
+
+        let shape_str = &header[paren_start + 1..paren_end];
+        let dims: Vec<usize> = shape_str
+            .split(',')
+            .filter_map(|s| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() { None } else { trimmed.parse().ok() }
+            })
+            .collect();
+
+        if dims.is_empty() {
+            return Err("Empty shape".to_string());
+        }
+
+        Ok(dims)
     }
 
     /// Synthesize text to audio (SYNC MODE)
@@ -142,9 +265,11 @@ impl PocketTTSModel {
             "[PocketTTS] generating latents with {} flow step (consistency model)",
             num_flow_steps
         );
+        let seed = if self.config.use_fixed_seed { Some(self.config.seed as u64) } else { None };
+        let noise_ref = self.noise_tensors.as_deref();
         let latents = self
             .flowlm
-            .generate_latents(&token_tensor, voice, num_flow_steps, self.config.temperature)
+            .generate_latents(&token_tensor, voice, num_flow_steps, self.config.temperature, seed, noise_ref)
             .map_err(|e| PocketTTSError::InferenceFailed(format!("FlowLM: {}", e)))?;
         eprintln!("[PocketTTS] latents shape: {:?}", latents.dims());
 
@@ -257,6 +382,7 @@ impl PocketTTSModel {
         self.mimi.reset_decoder_cache();
 
         let num_flow_steps = self.config.consistency_steps.max(1) as usize;
+        let seed = if self.config.use_fixed_seed { Some(self.config.seed as u64) } else { None };
 
         // Decode batch size - how many latents to accumulate before decoding
         // Smaller = lower TTFA, larger = more efficient
@@ -298,6 +424,8 @@ impl PocketTTSModel {
             voice,
             num_flow_steps,
             self.config.temperature,
+            seed,
+            None, // noise_tensors: not used in production streaming
             |latent: &Tensor, _step: usize, is_eos: bool| {
                 if !*should_continue.borrow() {
                     return LatentStreamControl::Stop;
@@ -473,9 +601,10 @@ impl PocketTTSModel {
 
         // Generate latents with FlowLM + FlowNet
         let num_flow_steps = 1;
+        let seed = if self.config.use_fixed_seed { Some(self.config.seed as u64) } else { None };
         let latents = self
             .flowlm
-            .generate_latents(&token_tensor, voice, num_flow_steps, self.config.temperature)
+            .generate_latents(&token_tensor, voice, num_flow_steps, self.config.temperature, seed, None)
             .map_err(|e| PocketTTSError::InferenceFailed(format!("FlowLM: {}", e)))?;
 
         // Get latent shape and data

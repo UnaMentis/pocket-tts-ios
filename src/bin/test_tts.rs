@@ -188,6 +188,7 @@ fn main() {
     let mut consistency_steps: Option<u32> = None;
     let mut speed: Option<f32> = None;
     let mut seed: Option<u32> = None;
+    let mut noise_dir: Option<PathBuf> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -276,6 +277,12 @@ fn main() {
                     i += 1;
                 }
             },
+            "--noise-dir" => {
+                if i + 1 < args.len() {
+                    noise_dir = Some(PathBuf::from(&args[i + 1]));
+                    i += 1;
+                }
+            },
             "--help" | "-h" => {
                 print_usage();
                 return;
@@ -329,6 +336,7 @@ fn main() {
             &test_text,
             export_latents_path.as_ref().map(|v| &**v),
             &tts_config,
+            noise_dir.as_deref(),
         );
     }
 }
@@ -478,6 +486,7 @@ fn run_single_phrase(
     test_text: &str,
     export_latents_path: Option<&Path>,
     config: &TTSConfig,
+    noise_dir: Option<&Path>,
 ) {
     println!("Configuration:");
     println!("  Model directory: {}", model_dir.display());
@@ -491,6 +500,9 @@ fn run_single_phrase(
     if let Some(latent_path) = export_latents_path {
         println!("  Export latents to: {}", latent_path.display());
     }
+    if let Some(nd) = noise_dir {
+        println!("  Noise tensors dir: {}", nd.display());
+    }
 
     let mut model = load_model(model_dir);
 
@@ -500,6 +512,15 @@ fn run_single_phrase(
         std::process::exit(1);
     }
     let sample_rate = model.sample_rate();
+
+    // Load noise tensors if provided (for correlation testing)
+    if let Some(nd) = noise_dir {
+        // Default to phrase_00 — for multi-phrase, use validation mode
+        match model.load_noise_tensors(nd, "phrase_00") {
+            Ok(count) => println!("  Loaded {} noise tensors for correlation testing", count),
+            Err(e) => eprintln!("WARNING: Failed to load noise tensors: {:?}", e),
+        }
+    }
 
     // Run synthesis (with or without latent export)
     println!("Synthesizing audio...");

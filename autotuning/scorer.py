@@ -5,6 +5,11 @@ Composite Quality Scorer for TTS Autotuning
 Reduces multiple quality metrics (WER, MCD, SNR, THD, correlation)
 into a single scalar score in [0.0, 1.0] for the autoresearch loop.
 
+Correlation is the PRIMARY metric. If correlation = 1.0, the output matches
+the reference exactly and all other metrics are automatically perfect. The
+other metrics serve as diagnostics — they explain WHERE divergence occurs
+when correlation is less than perfect.
+
 Usage:
     python scorer.py --audio output.wav --text "Hello world" --reference ref.wav
     python scorer.py --metrics-json metrics.json
@@ -20,12 +25,16 @@ import numpy as np
 
 
 # Weight configuration — controls relative importance of each metric
+# Correlation is the PRIMARY metric (50% weight). If correlation = 1.0,
+# the output matches the reference and all other metrics are perfect by
+# definition. The other metrics are diagnostic — they explain WHERE
+# divergence occurs when correlation < 1.0.
 WEIGHTS = {
-    "intelligibility": 0.40,  # WER-based (most important)
-    "acoustic_similarity": 0.25,  # MCD-based
-    "signal_quality": 0.15,  # SNR-based
-    "correlation": 0.10,  # Waveform correlation to reference
-    "distortion": 0.10,  # THD-based
+    "correlation": 0.50,  # Waveform fidelity (PRIMARY — dominates scoring)
+    "intelligibility": 0.20,  # WER-based (diagnostic)
+    "acoustic_similarity": 0.15,  # MCD-based (diagnostic)
+    "signal_quality": 0.08,  # SNR-based (diagnostic)
+    "distortion": 0.07,  # THD-based (diagnostic)
 }
 
 
@@ -34,11 +43,12 @@ def normalize_mcd(mcd: float) -> float:
     Normalize MCD to [0, 1] where 1 = excellent.
 
     Uses MFCC Euclidean distance (not traditional mel-cepstral MCD).
-    MCD < 30 → 1.0 (very similar spectra)
-    MCD > 150 → 0.0 (very different spectra)
-    Calibrated from cross-implementation TTS comparison (Rust vs Python).
+    MCD < 50 → 1.0 (very similar spectra)
+    MCD > 200 → 0.0 (very different spectra)
+    Calibrated from cross-implementation TTS comparison (Rust vs Python),
+    where baseline MCD is typically 60-130.
     """
-    return float(np.clip(1.0 - (mcd - 30.0) / 120.0, 0.0, 1.0))
+    return float(np.clip(1.0 - (mcd - 50.0) / 150.0, 0.0, 1.0))
 
 
 def normalize_snr(snr_db: float) -> float:
@@ -102,7 +112,9 @@ def compute_composite_score(
         active_weights["signal_quality"] = WEIGHTS["signal_quality"]
 
     if correlation is not None:
-        components["correlation"] = max(0.0, correlation)
+        # Correlation is already in [0, 1] range for positive values.
+        # Negative correlation is worse than zero (anti-correlated).
+        components["correlation"] = max(0.0, float(correlation))
         active_weights["correlation"] = WEIGHTS["correlation"]
 
     if thd_percent is not None:
