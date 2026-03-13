@@ -33,33 +33,34 @@ def normalize_mcd(mcd: float) -> float:
     """
     Normalize MCD to [0, 1] where 1 = excellent.
 
-    MCD < 2 dB → 1.0 (near-perfect)
-    MCD > 10 dB → 0.0 (very poor)
-    Linear interpolation between.
+    Uses MFCC Euclidean distance (not traditional mel-cepstral MCD).
+    MCD < 30 → 1.0 (very similar spectra)
+    MCD > 150 → 0.0 (very different spectra)
+    Calibrated from cross-implementation TTS comparison (Rust vs Python).
     """
-    return float(np.clip(1.0 - (mcd - 2.0) / 8.0, 0.0, 1.0))
+    return float(np.clip(1.0 - (mcd - 30.0) / 120.0, 0.0, 1.0))
 
 
 def normalize_snr(snr_db: float) -> float:
     """
     Normalize SNR to [0, 1] where 1 = excellent.
 
-    SNR > 40 dB → 1.0 (very clean)
-    SNR < 5 dB → 0.0 (very noisy)
-    Linear interpolation between.
+    SNR > 35 dB → 1.0 (very clean)
+    SNR < 15 dB → 0.0 (very noisy)
+    Tightened from [5, 40] based on observed TTS range (23-28 dB).
     """
-    return float(np.clip((snr_db - 5.0) / 35.0, 0.0, 1.0))
+    return float(np.clip((snr_db - 15.0) / 20.0, 0.0, 1.0))
 
 
 def normalize_thd(thd_percent: float) -> float:
     """
     Normalize THD to [0, 1] where 1 = low distortion (good).
 
-    THD < 1% → 1.0 (negligible distortion)
-    THD > 50% → 0.0 (severe distortion)
-    Linear interpolation between.
+    THD < 5% → 1.0 (negligible distortion)
+    THD > 40% → 0.0 (severe distortion)
+    Tightened from [1, 50] based on observed TTS range (25-55%).
     """
-    return float(np.clip(1.0 - (thd_percent - 1.0) / 49.0, 0.0, 1.0))
+    return float(np.clip(1.0 - (thd_percent - 5.0) / 35.0, 0.0, 1.0))
 
 
 def compute_composite_score(
