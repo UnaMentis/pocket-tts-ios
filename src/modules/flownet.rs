@@ -324,7 +324,15 @@ impl FlowNet {
     ///   When provided, this tensor is used instead of sampling random noise.
     ///   This allows Rust to use the exact same noise as Python used when generating
     ///   reference audio, eliminating RNG differences from the correlation measurement.
-    pub fn generate(&self, hidden: &Tensor, num_steps: usize, temperature: f32, device: &Device, seed: Option<u64>, noise_override: Option<&Tensor>) -> Result<Tensor> {
+    pub fn generate(
+        &self,
+        hidden: &Tensor,
+        num_steps: usize,
+        temperature: f32,
+        device: &Device,
+        seed: Option<u64>,
+        noise_override: Option<&Tensor>,
+    ) -> Result<Tensor> {
         let (batch_size, seq_len, _) = hidden.dims3()?;
 
         // Get conditioning embedding
@@ -353,7 +361,8 @@ impl FlowNet {
             if let Some(s) = seed {
                 // Deterministic: use seeded RNG for reproducible results
                 let mut rng = rand::rngs::StdRng::seed_from_u64(s);
-                let normal = Normal::new(0.0f32, std).map_err(|e| candle_core::Error::Msg(format!("Normal distribution error: {}", e)))?;
+                let normal = Normal::new(0.0f32, std)
+                    .map_err(|e| candle_core::Error::Msg(format!("Normal distribution error: {}", e)))?;
                 let n_elements = batch_size * seq_len * self.config.latent_dim;
                 let values: Vec<f32> = (0..n_elements).map(|_| normal.sample(&mut rng)).collect();
                 Tensor::from_vec(values, (batch_size, seq_len, self.config.latent_dim), device)?
