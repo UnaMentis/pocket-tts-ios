@@ -26,6 +26,7 @@ use candle_nn::VarBuilder;
 use hound::{WavSpec, WavWriter};
 
 // Import from the library (requires rlib crate-type)
+use pocket_tts_ios::config::TTSConfig;
 use pocket_tts_ios::models::mimi::{MimiConfig, MimiDecoder};
 use pocket_tts_ios::models::pocket_tts::PocketTTSModel;
 
@@ -182,6 +183,11 @@ fn main() {
     let mut load_latents_path: Option<PathBuf> = None;
     let mut test_convtr = false;
     let mut test_mimi_trace = false;
+    let mut temperature: Option<f32> = None;
+    let mut top_p: Option<f32> = None;
+    let mut consistency_steps: Option<u32> = None;
+    let mut speed: Option<f32> = None;
+    let mut seed: Option<u32> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -240,6 +246,36 @@ fn main() {
             "--test-mimi-trace" => {
                 test_mimi_trace = true;
             },
+            "--temperature" => {
+                if i + 1 < args.len() {
+                    temperature = Some(args[i + 1].parse().expect("Invalid temperature value"));
+                    i += 1;
+                }
+            },
+            "--top-p" => {
+                if i + 1 < args.len() {
+                    top_p = Some(args[i + 1].parse().expect("Invalid top-p value"));
+                    i += 1;
+                }
+            },
+            "--consistency-steps" => {
+                if i + 1 < args.len() {
+                    consistency_steps = Some(args[i + 1].parse().expect("Invalid consistency-steps value"));
+                    i += 1;
+                }
+            },
+            "--speed" => {
+                if i + 1 < args.len() {
+                    speed = Some(args[i + 1].parse().expect("Invalid speed value"));
+                    i += 1;
+                }
+            },
+            "--seed" => {
+                if i + 1 < args.len() {
+                    seed = Some(args[i + 1].parse().expect("Invalid seed value"));
+                    i += 1;
+                }
+            },
             "--help" | "-h" => {
                 print_usage();
                 return;
@@ -251,6 +287,17 @@ fn main() {
             },
         }
         i += 1;
+    }
+
+    // Build TTS config from CLI args
+    let mut tts_config = TTSConfig::default();
+    if let Some(v) = temperature { tts_config.temperature = v; }
+    if let Some(v) = top_p { tts_config.top_p = v; }
+    if let Some(v) = consistency_steps { tts_config.consistency_steps = v; }
+    if let Some(v) = speed { tts_config.speed = v; }
+    if let Some(v) = seed {
+        tts_config.seed = v;
+        tts_config.use_fixed_seed = true;
     }
 
     // Run in validation mode, latent-load mode, or single-phrase mode
@@ -268,7 +315,7 @@ fn main() {
             extended_validation,
         );
     } else {
-        run_single_phrase(&model_dir, &output_path, &test_text, export_latents_path.as_ref().map(|v| &**v));
+        run_single_phrase(&model_dir, &output_path, &test_text, export_latents_path.as_ref().map(|v| &**v), &tts_config);
     }
 }
 
@@ -411,16 +458,27 @@ fn run_validation_mode(model_dir: &Path, output_dir: &Path, json_report: Option<
 }
 
 /// Run single phrase mode (original behavior)
-fn run_single_phrase(model_dir: &Path, output_path: &Path, test_text: &str, export_latents_path: Option<&Path>) {
+fn run_single_phrase(model_dir: &Path, output_path: &Path, test_text: &str, export_latents_path: Option<&Path>, config: &TTSConfig) {
     println!("Configuration:");
     println!("  Model directory: {}", model_dir.display());
     println!("  Output file: {}", output_path.display());
     println!("  Test text: \"{}\"\n", test_text);
+    println!("  Temperature: {}", config.temperature);
+    println!("  Top-P: {}", config.top_p);
+    println!("  Consistency steps: {}", config.consistency_steps);
+    println!("  Speed: {}", config.speed);
+    println!("  Seed: {} (fixed: {})", config.seed, config.use_fixed_seed);
     if let Some(latent_path) = export_latents_path {
         println!("  Export latents to: {}", latent_path.display());
     }
 
     let mut model = load_model(model_dir);
+
+    // Apply TTS configuration
+    if let Err(e) = model.configure(config.clone()) {
+        eprintln!("ERROR: Invalid config: {:?}", e);
+        std::process::exit(1);
+    }
     let sample_rate = model.sample_rate();
 
     // Run synthesis (with or without latent export)
@@ -966,6 +1024,11 @@ fn print_usage() {
     println!("  --export-latents PATH      Export latents to .npy file (for debugging)");
     println!("  --load-latents PATH        Load pre-saved latents (.f32) and run through Mimi");
     println!("  --json-report PATH         Write JSON report to file");
+    println!("  --temperature FLOAT        Sampling temperature (0.0-1.0, default: 0.7)");
+    println!("  --top-p FLOAT              Top-P nucleus sampling (0.1-1.0, default: 0.9)");
+    println!("  --consistency-steps INT    Consistency steps (1-4, default: 2)");
+    println!("  --speed FLOAT              Speed multiplier (0.5-2.0, default: 1.0)");
+    println!("  --seed INT                 Fixed random seed (enables deterministic mode)");
     println!("  -h, --help                 Show this help message");
     println!("\nThe model directory should contain:");
     println!("  - model.safetensors");

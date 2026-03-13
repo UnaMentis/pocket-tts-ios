@@ -3,6 +3,7 @@
 
 # Model files (downloaded via scripts/download-model.py)
 /models/
+/kyutai-pocket-ios/
 
 # Cargo lock (optional - some prefer to track this)
 # Cargo.lock
@@ -40,6 +41,14 @@ tests/ios-harness/PocketTTSDemo/PocketTTSDemo/Models/
 tests/ios-harness/PocketTTSDemo/PocketTTSDemo/pocket_tts_ios.swift
 tests/ios-harness/PocketTTSDemo/PocketTTSDemo/PocketTTSSwift.swift
 tests/ios-harness/PocketTTSDemo/*.xcodeproj/
+
+# Autotuning transient outputs
+autotuning/audio/
+autotuning/results.tsv
+autotuning/memory.json
+autotuning/configs/
+autotuning/baselines/
+autotuning/REPORT.md
 
 # Release artifacts (uploaded by CI, not committed)
 /release/

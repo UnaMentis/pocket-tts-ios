@@ -4,9 +4,24 @@ Autoresearch-style iterative optimization loop for Pocket TTS quality.
 
 Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) — an autonomous AI research loop that iteratively improves a system by modifying parameters, evaluating, and keeping only improvements.
 
+## Prerequisites
+
+```bash
+# Set up Python virtual environment (one-time)
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r validation/requirements.txt
+
+# Ensure model files are present
+ls kyutai-pocket-ios/model.safetensors kyutai-pocket-ios/tokenizer.model kyutai-pocket-ios/voices/
+```
+
 ## Quick Start
 
 ```bash
+# Activate venv first
+source .venv/bin/activate
+
 # 1. Establish baseline with default config
 python autotuning/autotune.py --phase baseline --model-dir kyutai-pocket-ios
 

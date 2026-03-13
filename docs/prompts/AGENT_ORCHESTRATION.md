@@ -27,6 +27,7 @@ Instead of a single agent grinding through endless debugging, this project uses 
 | Research Advisor | [research-advisor.md](research-advisor.md) | audit/research-advisor-report-1.md | When stuck / daily |
 | Verification | [verification-agent.md](verification-agent.md) | audit/verification-report-1.md | After code changes |
 | Progress Tracker | [progress-tracker.md](progress-tracker.md) | audit/progress-dashboard.md | Weekly |
+| Autotuning | [../../autotuning/program.md](../../autotuning/program.md) | autotuning/REPORT.md, memory.json | On demand / continuous |
 
 ---
 
@@ -101,6 +102,14 @@ Instead of a single agent grinding through endless debugging, this project uses 
 - **Duration:** ~5 minutes
 - **Purpose:** Motivation, timeline estimation, stakeholder updates
 - **Read output:** Plan next week's focus
+
+### Autotuning Agent
+- **Trigger:** When quality metrics plateau or after major code changes
+- **Duration:** Runs indefinitely (autonomous loop)
+- **Purpose:** Iteratively optimize TTS quality via autoresearch-style modify → evaluate → keep/discard loop
+- **Setup:** Run on a dedicated branch. Start with `--phase baseline` to verify prerequisites
+- **Read output:** Check `autotuning/REPORT.md`, `memory.json`, and git log for accumulated improvements
+- **Details:** See [autotuning/README.md](../../autotuning/README.md) for full usage
 
 ---
 

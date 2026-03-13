@@ -36,7 +36,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-# Add parent dir so we can import validation modules
+# Add autotuning dir and validation dir to path for sibling imports
+sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "validation"))
 
 from scorer import compute_composite_score, score_from_metrics_dict
@@ -112,14 +113,14 @@ class TTSRunner:
     def __init__(self, project_dir: Path, model_dir: Path):
         self.project_dir = project_dir
         self.model_dir = model_dir
-        self.binary = project_dir / "target" / "release" / "pocket-tts-cli"
+        self.binary = project_dir / "target" / "release" / "test-tts"
 
     def ensure_built(self):
         """Build the Rust binary if needed."""
         if not self.binary.exists():
             print("Building Rust binary (release mode)...")
             result = subprocess.run(
-                ["cargo", "build", "--release", "--bin", "pocket-tts-cli"],
+                ["cargo", "build", "--release", "--bin", "test-tts"],
                 cwd=self.project_dir,
                 capture_output=True,
                 text=True,

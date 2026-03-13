@@ -234,6 +234,29 @@ This system enables us to:
 
 The last few percentage points of quality matter—they're the difference between "good enough" and "production ready."
 
+## Autonomous Quality Optimization
+
+An [autoresearch](https://github.com/karpathy/autoresearch)-style optimization loop that autonomously improves TTS audio quality. An AI agent iteratively modifies parameters or code, evaluates against a composite quality score, keeps improvements, and discards regressions — looping indefinitely toward a perfect score.
+
+**How it works**: Each iteration follows: REMEMBER → ANALYZE → CHECK (dead ends) → MODIFY one thing → EVALUATE → COMPARE → DECIDE (commit or reset) → RECORD → REPEAT. A persistent memory system tracks dead ends, promising leads, and learned rules across sessions so the agent never repeats mistakes.
+
+```bash
+# Phase 1: Establish baseline
+python autotuning/autotune.py --phase baseline --model-dir kyutai-pocket-ios
+
+# Phase 2: Sweep individual parameters
+python autotuning/autotune.py --phase sweep --param temperature --model-dir kyutai-pocket-ios
+
+# Phase 3: Joint optimization
+python autotuning/autotune.py --phase optimize --iterations 100 --model-dir kyutai-pocket-ios
+
+# Phase 4: Autonomous AI agent loop (start a fresh Claude Code session, paste autotuning/program.md)
+```
+
+The composite score combines intelligibility (40%, WER), acoustic similarity (25%, MCD), signal quality (15%, SNR), waveform correlation (10%), and low distortion (10%, THD) into a single 0-1 scalar.
+
+See [autotuning/README.md](autotuning/README.md) for details and [docs/research/autoresearch-tts-adaptation.md](docs/research/autoresearch-tts-adaptation.md) for the full design document.
+
 ## Development Quality
 
 This project uses comprehensive development infrastructure:
