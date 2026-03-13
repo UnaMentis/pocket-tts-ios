@@ -1,0 +1,1285 @@
+{
+  "version": 1,
+  "created": "2026-03-12T22:27:09.556249",
+  "baseline": {
+    "score": 0.776356919876718,
+    "config": {
+      "temperature": 0.7,
+      "top_p": 0.9,
+      "consistency_steps": 2,
+      "speed": 1.0,
+      "seed": 42
+    },
+    "per_metric": {
+      "wer": 0.05620915032679739,
+      "snr_db": 25.795260313790124,
+      "thd_percent": 38.860458564758304
+    },
+    "timestamp": "2026-03-12T22:27:24.217823"
+  },
+  "best": {
+    "score": 0.8251068589380861,
+    "config": {
+      "temperature": 0.7,
+      "top_p": 0.9,
+      "consistency_steps": 2,
+      "speed": 1.0,
+      "seed": 42
+    },
+    "per_metric": {
+      "wer": 0.011764705882352941,
+      "snr_db": 24.49811877716466,
+      "thd_percent": 26.174031066894532
+    },
+    "experiment_id": "sweep_temperature_014"
+  },
+  "experiments": [
+    {
+      "experiment_id": "baseline",
+      "timestamp": "2026-03-12T22:27:24.217981",
+      "config": {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.776356919876718,
+      "per_metric": {
+        "wer": 0.05620915032679739,
+        "snr_db": 25.795260313790124,
+        "thd_percent": 38.860458564758304
+      },
+      "delta_from_best": 0.0,
+      "metric_deltas": {},
+      "decision": "kept",
+      "hypothesis": "Establish baseline with default parameters",
+      "reasoning": "Starting point for all future comparisons",
+      "changes_made": "Default config: temp=0.7, top_p=0.9, consistency=2, speed=1.0",
+      "classification": "kept"
+    },
+    {
+      "experiment_id": "sweep_temperature_000",
+      "timestamp": "2026-03-12T22:27:44.170218",
+      "config": {
+        "temperature": 0.0,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.8059090638716226,
+      "per_metric": {
+        "wer": 0.0,
+        "snr_db": 24.051832773482364,
+        "thd_percent": 34.511681365966794
+      },
+      "delta_from_best": 0.02955214399490469,
+      "metric_deltas": {
+        "wer": -0.05620915032679739,
+        "snr_db": -1.74342754030776,
+        "thd_percent": -4.34877719879151
+      },
+      "decision": "kept",
+      "hypothesis": "Testing if temperature=0.0 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.0",
+      "classification": "pure_regression"
+    },
+    {
+      "experiment_id": "sweep_temperature_001",
+      "timestamp": "2026-03-12T22:27:59.067871",
+      "config": {
+        "temperature": 0.05,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.7762332099278831,
+      "per_metric": {
+        "wer": 0.05620915032679739,
+        "snr_db": 26.153452761391623,
+        "thd_percent": 33.36773891448975
+      },
+      "delta_from_best": -0.029675853943739505,
+      "metric_deltas": {
+        "wer": 0.05620915032679739,
+        "snr_db": 2.1016199879092596,
+        "thd_percent": -1.143942451477045
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=0.05 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.05",
+      "classification": "mixed",
+      "improved_metrics": [
+        "wer",
+        "snr_db"
+      ],
+      "regressed_metrics": [
+        "thd_percent"
+      ]
+    },
+    {
+      "experiment_id": "sweep_temperature_002",
+      "timestamp": "2026-03-12T22:28:13.867789",
+      "config": {
+        "temperature": 0.1,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.7637443204091743,
+      "per_metric": {
+        "wer": 0.09176470588235294,
+        "snr_db": 25.535794245810774,
+        "thd_percent": 27.886719512939454
+      },
+      "delta_from_best": -0.04216474346244836,
+      "metric_deltas": {
+        "wer": 0.09176470588235294,
+        "snr_db": 1.48396147232841,
+        "thd_percent": -6.62496185302734
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=0.1 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.1",
+      "classification": "mixed",
+      "improved_metrics": [
+        "wer",
+        "snr_db"
+      ],
+      "regressed_metrics": [
+        "thd_percent"
+      ]
+    },
+    {
+      "experiment_id": "sweep_temperature_003",
+      "timestamp": "2026-03-12T22:28:28.875559",
+      "config": {
+        "temperature": 0.15,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.7984379297085953,
+      "per_metric": {
+        "wer": 0.0,
+        "snr_db": 23.77672591000748,
+        "thd_percent": 32.49237747192383
+      },
+      "delta_from_best": -0.00747113416302736,
+      "metric_deltas": {
+        "wer": 0.0,
+        "snr_db": -0.2751068634748819,
+        "thd_percent": -2.019303894042963
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=0.15 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.15",
+      "classification": "pure_regression"
+    },
+    {
+      "experiment_id": "sweep_temperature_004",
+      "timestamp": "2026-03-12T22:28:44.093567",
+      "config": {
+        "temperature": 0.2,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.7682924787963987,
+      "per_metric": {
+        "wer": 0.011764705882352941,
+        "snr_db": 25.69846283667429,
+        "thd_percent": 54.49763793945313
+      },
+      "delta_from_best": -0.03761658507522392,
+      "metric_deltas": {
+        "wer": 0.011764705882352941,
+        "snr_db": 1.6466300631919282,
+        "thd_percent": 19.985956573486334
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=0.2 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.2",
+      "classification": "pure_improvement"
+    },
+    {
+      "experiment_id": "sweep_temperature_005",
+      "timestamp": "2026-03-12T22:28:59.122364",
+      "config": {
+        "temperature": 0.25,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.8094665156088172,
+      "per_metric": {
+        "wer": 0.011764705882352941,
+        "snr_db": 27.053048358754246,
+        "thd_percent": 42.89931001663208
+      },
+      "delta_from_best": 0.0035574517371945724,
+      "metric_deltas": {
+        "wer": 0.011764705882352941,
+        "snr_db": 3.0012155852718827,
+        "thd_percent": 8.387628650665285
+      },
+      "decision": "kept",
+      "hypothesis": "Testing if temperature=0.25 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.25",
+      "classification": "pure_improvement"
+    },
+    {
+      "experiment_id": "sweep_temperature_006",
+      "timestamp": "2026-03-12T22:29:14.060745",
+      "config": {
+        "temperature": 0.3,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.8141611511641831,
+      "per_metric": {
+        "wer": 0.011764705882352941,
+        "snr_db": 24.679958555610266,
+        "thd_percent": 25.711703968048095
+      },
+      "delta_from_best": 0.004694635555365867,
+      "metric_deltas": {
+        "wer": 0.0,
+        "snr_db": -2.37308980314398,
+        "thd_percent": -17.187606048583984
+      },
+      "decision": "kept",
+      "hypothesis": "Testing if temperature=0.3 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.3",
+      "classification": "pure_regression"
+    },
+    {
+      "experiment_id": "sweep_temperature_007",
+      "timestamp": "2026-03-12T22:29:28.992215",
+      "config": {
+        "temperature": 0.35,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.7658496025250099,
+      "per_metric": {
+        "wer": 0.09176470588235294,
+        "snr_db": 26.074034830010014,
+        "thd_percent": 28.34649238586426
+      },
+      "delta_from_best": -0.048311548639173196,
+      "metric_deltas": {
+        "wer": 0.08,
+        "snr_db": 1.3940762743997475,
+        "thd_percent": 2.6347884178161642
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=0.35 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.35",
+      "classification": "pure_improvement"
+    },
+    {
+      "experiment_id": "sweep_temperature_008",
+      "timestamp": "2026-03-12T22:29:44.051550",
+      "config": {
+        "temperature": 0.4,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.7149879168101065,
+      "per_metric": {
+        "wer": 0.09176470588235294,
+        "snr_db": 23.99060902077619,
+        "thd_percent": 46.8206901550293
+      },
+      "delta_from_best": -0.09917323435407654,
+      "metric_deltas": {
+        "wer": 0.08,
+        "snr_db": -0.6893495348340757,
+        "thd_percent": 21.108986186981202
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=0.4 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.4",
+      "classification": "mixed",
+      "improved_metrics": [
+        "wer",
+        "thd_percent"
+      ],
+      "regressed_metrics": [
+        "snr_db"
+      ]
+    },
+    {
+      "experiment_id": "sweep_temperature_009",
+      "timestamp": "2026-03-12T22:29:58.927416",
+      "config": {
+        "temperature": 0.45,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.7857484351394133,
+      "per_metric": {
+        "wer": 0.011764705882352941,
+        "snr_db": 26.38418716582755,
+        "thd_percent": 42.987817001342776
+      },
+      "delta_from_best": -0.028412716024769802,
+      "metric_deltas": {
+        "wer": 0.0,
+        "snr_db": 1.7042286102172852,
+        "thd_percent": 17.27611303329468
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=0.45 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.45",
+      "classification": "pure_improvement"
+    },
+    {
+      "experiment_id": "sweep_temperature_010",
+      "timestamp": "2026-03-12T22:30:13.569684",
+      "config": {
+        "temperature": 0.5,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.7953523414289808,
+      "per_metric": {
+        "wer": 0.011764705882352941,
+        "snr_db": 25.336484997233207,
+        "thd_percent": 35.31368522644043
+      },
+      "delta_from_best": -0.01880880973520227,
+      "metric_deltas": {
+        "wer": 0.0,
+        "snr_db": 0.6565264416229404,
+        "thd_percent": 9.601981258392332
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=0.5 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.5",
+      "classification": "pure_improvement"
+    },
+    {
+      "experiment_id": "sweep_temperature_011",
+      "timestamp": "2026-03-12T22:30:28.147560",
+      "config": {
+        "temperature": 0.55,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.7822766929016787,
+      "per_metric": {
+        "wer": 0.05620915032679739,
+        "snr_db": 24.67947890045554,
+        "thd_percent": 27.154785537719725
+      },
+      "delta_from_best": -0.03188445826250441,
+      "metric_deltas": {
+        "wer": 0.044444444444444446,
+        "snr_db": -0.0004796551547272543,
+        "thd_percent": 1.4430815696716301
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=0.55 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.55",
+      "classification": "pure_improvement"
+    },
+    {
+      "experiment_id": "sweep_temperature_012",
+      "timestamp": "2026-03-12T22:30:42.663944",
+      "config": {
+        "temperature": 0.6,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.8042916116715169,
+      "per_metric": {
+        "wer": 0.0,
+        "snr_db": 25.933373495975253,
+        "thd_percent": 35.1620979309082
+      },
+      "delta_from_best": -0.009869539492666224,
+      "metric_deltas": {
+        "wer": -0.011764705882352941,
+        "snr_db": 1.253414940364987,
+        "thd_percent": 9.450393962860108
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=0.6 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.6",
+      "classification": "mixed",
+      "improved_metrics": [
+        "snr_db",
+        "thd_percent"
+      ],
+      "regressed_metrics": [
+        "wer"
+      ]
+    },
+    {
+      "experiment_id": "sweep_temperature_013",
+      "timestamp": "2026-03-12T22:30:57.070208",
+      "config": {
+        "temperature": 0.65,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.7905867719010723,
+      "per_metric": {
+        "wer": 0.0,
+        "snr_db": 26.24696227761268,
+        "thd_percent": 39.352807235717776
+      },
+      "delta_from_best": -0.02357437926311079,
+      "metric_deltas": {
+        "wer": -0.011764705882352941,
+        "snr_db": 1.567003722002415,
+        "thd_percent": 13.641103267669681
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=0.65 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.65",
+      "classification": "mixed",
+      "improved_metrics": [
+        "snr_db",
+        "thd_percent"
+      ],
+      "regressed_metrics": [
+        "wer"
+      ]
+    },
+    {
+      "experiment_id": "sweep_temperature_014",
+      "timestamp": "2026-03-12T22:31:11.786266",
+      "config": {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.8251068589380861,
+      "per_metric": {
+        "wer": 0.011764705882352941,
+        "snr_db": 24.49811877716466,
+        "thd_percent": 26.174031066894532
+      },
+      "delta_from_best": 0.010945707773903024,
+      "metric_deltas": {
+        "wer": 0.0,
+        "snr_db": -0.18183977844560673,
+        "thd_percent": 0.46232709884643697
+      },
+      "decision": "kept",
+      "hypothesis": "Testing if temperature=0.7 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.7",
+      "classification": "mixed",
+      "improved_metrics": [
+        "thd_percent"
+      ],
+      "regressed_metrics": [
+        "snr_db"
+      ]
+    },
+    {
+      "experiment_id": "sweep_temperature_015",
+      "timestamp": "2026-03-12T22:31:26.215215",
+      "config": {
+        "temperature": 0.75,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.7503001087827332,
+      "per_metric": {
+        "wer": 0.1035294117647059,
+        "snr_db": 26.813843606932096,
+        "thd_percent": 41.54123058319092
+      },
+      "delta_from_best": -0.07480675015535287,
+      "metric_deltas": {
+        "wer": 0.09176470588235296,
+        "snr_db": 2.3157248297674364,
+        "thd_percent": 15.367199516296385
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=0.75 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.75",
+      "classification": "pure_improvement"
+    },
+    {
+      "experiment_id": "sweep_temperature_016",
+      "timestamp": "2026-03-12T22:31:40.650156",
+      "config": {
+        "temperature": 0.8,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.731944080173381,
+      "per_metric": {
+        "wer": 0.06666666666666667,
+        "snr_db": 23.702204582918917,
+        "thd_percent": 41.6235050201416
+      },
+      "delta_from_best": -0.09316277876470513,
+      "metric_deltas": {
+        "wer": 0.054901960784313725,
+        "snr_db": -0.7959141942457428,
+        "thd_percent": 15.449473953247068
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=0.8 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.8",
+      "classification": "mixed",
+      "improved_metrics": [
+        "wer",
+        "thd_percent"
+      ],
+      "regressed_metrics": [
+        "snr_db"
+      ]
+    },
+    {
+      "experiment_id": "sweep_temperature_017",
+      "timestamp": "2026-03-12T22:31:55.269344",
+      "config": {
+        "temperature": 0.85,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.7867288999864794,
+      "per_metric": {
+        "wer": 0.011764705882352941,
+        "snr_db": 24.136816251791338,
+        "thd_percent": 33.30827713012695
+      },
+      "delta_from_best": -0.03837795895160667,
+      "metric_deltas": {
+        "wer": 0.0,
+        "snr_db": -0.36130252537332197,
+        "thd_percent": 7.134246063232421
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=0.85 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.85",
+      "classification": "mixed",
+      "improved_metrics": [
+        "thd_percent"
+      ],
+      "regressed_metrics": [
+        "snr_db"
+      ]
+    },
+    {
+      "experiment_id": "sweep_temperature_018",
+      "timestamp": "2026-03-12T22:32:09.665599",
+      "config": {
+        "temperature": 0.9,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.7904346079335289,
+      "per_metric": {
+        "wer": 0.011764705882352941,
+        "snr_db": 24.729150035707132,
+        "thd_percent": 36.00669403076172
+      },
+      "delta_from_best": -0.034672251004557175,
+      "metric_deltas": {
+        "wer": 0.0,
+        "snr_db": 0.23103125854247253,
+        "thd_percent": 9.83266296386719
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=0.9 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.9",
+      "classification": "pure_improvement"
+    },
+    {
+      "experiment_id": "sweep_temperature_019",
+      "timestamp": "2026-03-12T22:32:24.249732",
+      "config": {
+        "temperature": 0.95,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.7593183491295165,
+      "per_metric": {
+        "wer": 0.04509803921568627,
+        "snr_db": 24.23975320259815,
+        "thd_percent": 35.87012977600098
+      },
+      "delta_from_best": -0.06578850980856965,
+      "metric_deltas": {
+        "wer": 0.033333333333333326,
+        "snr_db": -0.2583655745665112,
+        "thd_percent": 9.696098709106447
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=0.95 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=0.95",
+      "classification": "mixed",
+      "improved_metrics": [
+        "wer",
+        "thd_percent"
+      ],
+      "regressed_metrics": [
+        "snr_db"
+      ]
+    },
+    {
+      "experiment_id": "sweep_temperature_020",
+      "timestamp": "2026-03-12T22:32:38.440788",
+      "config": {
+        "temperature": 1.0,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.7532608575133423,
+      "per_metric": {
+        "wer": 0.09176470588235294,
+        "snr_db": 25.28259976961821,
+        "thd_percent": 32.065508937835695
+      },
+      "delta_from_best": -0.07184600142474384,
+      "metric_deltas": {
+        "wer": 0.08,
+        "snr_db": 0.784480992453549,
+        "thd_percent": 5.891477870941163
+      },
+      "decision": "discarded",
+      "hypothesis": "Testing if temperature=1.0 improves quality",
+      "reasoning": "Systematic sweep of temperature",
+      "changes_made": "temperature=1.0",
+      "classification": "pure_improvement"
+    },
+    {
+      "experiment_id": "manual_cs3_001",
+      "timestamp": "2026-03-12T22:56:42.811057",
+      "config": {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "consistency_steps": 3,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.8145,
+      "per_metric": {
+        "wer": 0.0,
+        "snr_db": 27.9,
+        "thd_percent": 34.58
+      },
+      "delta_from_best": -0.010606858938086106,
+      "metric_deltas": {
+        "wer": -0.0118,
+        "snr_db": 3.4,
+        "thd_percent": 8.41
+      },
+      "decision": "discarded",
+      "hypothesis": "More FlowNet denoising steps (3 vs 2) should produce cleaner latents",
+      "reasoning": "consistency_steps directly controls FlowNet quality. 3 steps gives more denoising iterations.",
+      "changes_made": "Changed consistency_steps from 2 to 3 (config only)",
+      "classification": "mixed",
+      "improved_metrics": [
+        "snr_db",
+        "thd_percent"
+      ],
+      "regressed_metrics": [
+        "wer"
+      ]
+    },
+    {
+      "experiment_id": "manual_tp95_001",
+      "timestamp": "2026-03-12T22:56:42.811824",
+      "config": {
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.5515,
+      "per_metric": {
+        "wer": 0.4,
+        "snr_db": 32.6,
+        "thd_percent": 56.37
+      },
+      "delta_from_best": -0.2736068589380861,
+      "metric_deltas": {
+        "wer": 0.3882,
+        "snr_db": 8.1,
+        "thd_percent": 30.2
+      },
+      "decision": "discarded",
+      "hypothesis": "Wider nucleus sampling (top_p=0.95) may capture more natural speech patterns",
+      "reasoning": "top_p=0.9 might be cutting off valid tokens. Wider sampling could help.",
+      "changes_made": "Changed top_p from 0.9 to 0.95 (config only)",
+      "classification": "pure_improvement"
+    },
+    {
+      "experiment_id": "refined_001",
+      "timestamp": "2026-03-13T08:53:56.393003",
+      "config": {
+        "temperature": 0.65,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 1.0,
+        "seed": 42
+      },
+      "composite_score": 0.5187,
+      "per_metric": {
+        "wer": 0.0,
+        "mcd": 113.73,
+        "snr_db": 17.9,
+        "thd_percent": 33.68,
+        "correlation": 0.0352
+      },
+      "delta_from_best": -0.30640685893808606,
+      "metric_deltas": {
+        "wer": 0.0,
+        "mcd": 24.66,
+        "snr_db": -1.3,
+        "thd_percent": -6.95,
+        "correlation": 0.0267
+      },
+      "decision": "discarded",
+      "hypothesis": "Lower temperature from 0.7 to 0.65 should improve SNR by reducing FlowNet noise",
+      "reasoning": "SNR normalized to 0.21 is the highest-weight weak metric. Methodology guidance: lower temp in small steps.",
+      "changes_made": "temperature=0.65 (from 0.7)",
+      "classification": "mixed",
+      "improved_metrics": [
+        "mcd",
+        "correlation"
+      ],
+      "regressed_metrics": [
+        "snr_db",
+        "thd_percent"
+      ]
+    },
+    {
+      "experiment_id": "refined_002",
+      "timestamp": "2026-03-13T08:53:56.393778",
+      "config": {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "consistency_steps": 2,
+        "speed": 0.95,
+        "seed": 42
+      },
+      "composite_score": 0.5,
+      "per_metric": {
+        "wer": 0.0,
+        "mcd": 121.22,
+        "snr_db": 20.0,
+        "thd_percent": 39.75,
+        "correlation": 0.0201
+      },
+      "delta_from_best": -0.3251068589380861,
+      "metric_deltas": {
+        "wer": 0.0,
+        "mcd": 32.15,
+        "snr_db": 0.8,
+        "thd_percent": -0.88,
+        "correlation": 0.0116
+      },
+      "decision": "discarded",
+      "hypothesis": "Speed=0.95 is untested, small step within safe range, may affect synthesis quality",
+      "reasoning": "Speed has zero sensitivity data. Exploratory with minimal magnitude (1 step).",
+      "changes_made": "speed=0.95 (from 1.0)",
+      "classification": "mixed",
+      "improved_metrics": [
+        "mcd",
+        "snr_db",
+        "correlation"
+      ],
+      "regressed_metrics": [
+        "thd_percent"
+      ]
+    }
+  ],
+  "dead_ends": [
+    {
+      "experiment_id": "sweep_temperature_003",
+      "changes_made": "temperature=0.15",
+      "hypothesis": "Testing if temperature=0.15 improves quality",
+      "result": "score 0.7984 (delta -0.0075)",
+      "timestamp": "2026-03-12T22:28:28.875559"
+    }
+  ],
+  "promising_leads": [
+    {
+      "experiment_id": "sweep_temperature_001",
+      "changes_made": "temperature=0.05",
+      "hypothesis": "Testing if temperature=0.05 improves quality",
+      "improved": [
+        "wer",
+        "snr_db"
+      ],
+      "regressed": [
+        "thd_percent"
+      ],
+      "metric_deltas": {
+        "wer": 0.05620915032679739,
+        "snr_db": 2.1016199879092596,
+        "thd_percent": -1.143942451477045
+      },
+      "composite_delta": -0.029675853943739505,
+      "note": "Improved wer, snr_db but regressed thd_percent. Net composite delta: -0.0297",
+      "timestamp": "2026-03-12T22:27:59.067871"
+    },
+    {
+      "experiment_id": "sweep_temperature_002",
+      "changes_made": "temperature=0.1",
+      "hypothesis": "Testing if temperature=0.1 improves quality",
+      "improved": [
+        "wer",
+        "snr_db"
+      ],
+      "regressed": [
+        "thd_percent"
+      ],
+      "metric_deltas": {
+        "wer": 0.09176470588235294,
+        "snr_db": 1.48396147232841,
+        "thd_percent": -6.62496185302734
+      },
+      "composite_delta": -0.04216474346244836,
+      "note": "Improved wer, snr_db but regressed thd_percent. Net composite delta: -0.0422",
+      "timestamp": "2026-03-12T22:28:13.867789"
+    },
+    {
+      "experiment_id": "sweep_temperature_008",
+      "changes_made": "temperature=0.4",
+      "hypothesis": "Testing if temperature=0.4 improves quality",
+      "improved": [
+        "wer",
+        "thd_percent"
+      ],
+      "regressed": [
+        "snr_db"
+      ],
+      "metric_deltas": {
+        "wer": 0.08,
+        "snr_db": -0.6893495348340757,
+        "thd_percent": 21.108986186981202
+      },
+      "composite_delta": -0.09917323435407654,
+      "note": "Improved wer, thd_percent but regressed snr_db. Net composite delta: -0.0992",
+      "timestamp": "2026-03-12T22:29:44.051550"
+    },
+    {
+      "experiment_id": "sweep_temperature_012",
+      "changes_made": "temperature=0.6",
+      "hypothesis": "Testing if temperature=0.6 improves quality",
+      "improved": [
+        "snr_db",
+        "thd_percent"
+      ],
+      "regressed": [
+        "wer"
+      ],
+      "metric_deltas": {
+        "wer": -0.011764705882352941,
+        "snr_db": 1.253414940364987,
+        "thd_percent": 9.450393962860108
+      },
+      "composite_delta": -0.009869539492666224,
+      "note": "Improved snr_db, thd_percent but regressed wer. Net composite delta: -0.0099",
+      "timestamp": "2026-03-12T22:30:42.663944"
+    },
+    {
+      "experiment_id": "sweep_temperature_013",
+      "changes_made": "temperature=0.65",
+      "hypothesis": "Testing if temperature=0.65 improves quality",
+      "improved": [
+        "snr_db",
+        "thd_percent"
+      ],
+      "regressed": [
+        "wer"
+      ],
+      "metric_deltas": {
+        "wer": -0.011764705882352941,
+        "snr_db": 1.567003722002415,
+        "thd_percent": 13.641103267669681
+      },
+      "composite_delta": -0.02357437926311079,
+      "note": "Improved snr_db, thd_percent but regressed wer. Net composite delta: -0.0236",
+      "timestamp": "2026-03-12T22:30:57.070208"
+    },
+    {
+      "experiment_id": "sweep_temperature_016",
+      "changes_made": "temperature=0.8",
+      "hypothesis": "Testing if temperature=0.8 improves quality",
+      "improved": [
+        "wer",
+        "thd_percent"
+      ],
+      "regressed": [
+        "snr_db"
+      ],
+      "metric_deltas": {
+        "wer": 0.054901960784313725,
+        "snr_db": -0.7959141942457428,
+        "thd_percent": 15.449473953247068
+      },
+      "composite_delta": -0.09316277876470513,
+      "note": "Improved wer, thd_percent but regressed snr_db. Net composite delta: -0.0932",
+      "timestamp": "2026-03-12T22:31:40.650156"
+    },
+    {
+      "experiment_id": "sweep_temperature_017",
+      "changes_made": "temperature=0.85",
+      "hypothesis": "Testing if temperature=0.85 improves quality",
+      "improved": [
+        "thd_percent"
+      ],
+      "regressed": [
+        "snr_db"
+      ],
+      "metric_deltas": {
+        "wer": 0.0,
+        "snr_db": -0.36130252537332197,
+        "thd_percent": 7.134246063232421
+      },
+      "composite_delta": -0.03837795895160667,
+      "note": "Improved thd_percent but regressed snr_db. Net composite delta: -0.0384",
+      "timestamp": "2026-03-12T22:31:55.269344"
+    },
+    {
+      "experiment_id": "sweep_temperature_019",
+      "changes_made": "temperature=0.95",
+      "hypothesis": "Testing if temperature=0.95 improves quality",
+      "improved": [
+        "wer",
+        "thd_percent"
+      ],
+      "regressed": [
+        "snr_db"
+      ],
+      "metric_deltas": {
+        "wer": 0.033333333333333326,
+        "snr_db": -0.2583655745665112,
+        "thd_percent": 9.696098709106447
+      },
+      "composite_delta": -0.06578850980856965,
+      "note": "Improved wer, thd_percent but regressed snr_db. Net composite delta: -0.0658",
+      "timestamp": "2026-03-12T22:32:24.249732"
+    },
+    {
+      "experiment_id": "manual_cs3_001",
+      "changes_made": "Changed consistency_steps from 2 to 3 (config only)",
+      "hypothesis": "More FlowNet denoising steps (3 vs 2) should produce cleaner latents",
+      "improved": [
+        "snr_db",
+        "thd_percent"
+      ],
+      "regressed": [
+        "wer"
+      ],
+      "metric_deltas": {
+        "wer": -0.0118,
+        "snr_db": 3.4,
+        "thd_percent": 8.41
+      },
+      "composite_delta": -0.010606858938086106,
+      "note": "Improved snr_db, thd_percent but regressed wer. Net composite delta: -0.0106",
+      "timestamp": "2026-03-12T22:56:42.811057"
+    },
+    {
+      "experiment_id": "refined_001",
+      "changes_made": "temperature=0.65 (from 0.7)",
+      "hypothesis": "Lower temperature from 0.7 to 0.65 should improve SNR by reducing FlowNet noise",
+      "improved": [
+        "mcd",
+        "correlation"
+      ],
+      "regressed": [
+        "snr_db",
+        "thd_percent"
+      ],
+      "metric_deltas": {
+        "wer": 0.0,
+        "mcd": 24.66,
+        "snr_db": -1.3,
+        "thd_percent": -6.95,
+        "correlation": 0.0267
+      },
+      "composite_delta": -0.30640685893808606,
+      "note": "Improved mcd, correlation but regressed snr_db, thd_percent. Net composite delta: -0.3064",
+      "timestamp": "2026-03-13T08:53:56.393003"
+    },
+    {
+      "experiment_id": "refined_002",
+      "changes_made": "speed=0.95 (from 1.0)",
+      "hypothesis": "Speed=0.95 is untested, small step within safe range, may affect synthesis quality",
+      "improved": [
+        "mcd",
+        "snr_db",
+        "correlation"
+      ],
+      "regressed": [
+        "thd_percent"
+      ],
+      "metric_deltas": {
+        "wer": 0.0,
+        "mcd": 32.15,
+        "snr_db": 0.8,
+        "thd_percent": -0.88,
+        "correlation": 0.0116
+      },
+      "composite_delta": -0.3251068589380861,
+      "note": "Improved mcd, snr_db, correlation but regressed thd_percent. Net composite delta: -0.3251",
+      "timestamp": "2026-03-13T08:53:56.393778"
+    }
+  ],
+  "rules_learned": [
+    {
+      "rule": "consistency_steps=3 gives perfect WER and better SNR (+3.4dB) but worse THD (+8.4%). The net effect is slightly negative (-0.0106). May be worth combining with a THD-improving change. top_p=0.95 is a dead end \u2014 causes word dropping (40% WER). Stick with top_p=0.9.",
+      "evidence": "Experiments manual_cs3_001 and manual_tp95_001",
+      "timestamp": "2026-03-12T22:56:42.812672"
+    },
+    {
+      "rule": "DEAD END: top_p > 0.9 causes catastrophic word dropping (40% WER at 0.95). Keep top_p at 0.9.",
+      "evidence": "manual_tp95_001: WER jumped to 40%, dropped 'Hello' entirely",
+      "timestamp": "2026-03-13T08:03:27.593833"
+    },
+    {
+      "rule": "DEAD END: Deterministic zero latents (Tensor::zeros in FlowNet) mask real quality issues. Always use production random noise.",
+      "evidence": "KNOWLEDGE_INDEX lesson #1: Rust used zeros while Python uses normal_(mean=0, std=sqrt(temp))",
+      "timestamp": "2026-03-13T08:03:27.594426"
+    },
+    {
+      "rule": "DEAD END: Amplitude scaling as a fix for low output. Root cause is always a deeper bug (e.g., batch-mode SEANet).",
+      "evidence": "KNOWLEDGE_INDEX 'Things Tried and Failed': 5x scaling removed after fixing SEANet streaming",
+      "timestamp": "2026-03-13T08:03:27.594997"
+    },
+    {
+      "rule": "DEAD END: Crossfade at chunk boundaries. Streaming ConvTranspose1d state handles continuity \u2014 crossfade blends different audio content.",
+      "evidence": "KNOWLEDGE_INDEX 'Things Tried and Failed'",
+      "timestamp": "2026-03-13T08:03:27.595565"
+    },
+    {
+      "rule": "DEAD END: min_gen_steps > 0 (forced minimum generation). Prevents natural EOS on short phrases. Use min_gen_steps=0.",
+      "evidence": "KNOWLEDGE_INDEX 'Things Tried and Failed'",
+      "timestamp": "2026-03-13T08:03:27.596124"
+    },
+    {
+      "rule": "DEAD END: temperature < 0.05 produces perfect WER but unnatural speech (composite 0.8059 < best 0.8251). Too deterministic.",
+      "evidence": "sweep_temperature_000: temp=0.0, WER=0.0 but overall score lower than temp=0.7",
+      "timestamp": "2026-03-13T08:03:27.596685"
+    },
+    {
+      "rule": "Temperature is the dominant tuning lever. Parabolic quality curve, peak at 0.7. Controls FlowNet noise via sqrt(temp).",
+      "evidence": "20-point temperature sweep (0.0-1.0): best=0.8251 at temp=0.7",
+      "timestamp": "2026-03-13T08:03:27.597245"
+    },
+    {
+      "rule": "WER and THD trade off inversely. Cleaner latents (lower temp) improve intelligibility but increase harmonic distortion. Must balance.",
+      "evidence": "Temperature sweep: low temp = low WER but high THD; high temp = higher WER but lower THD",
+      "timestamp": "2026-03-13T08:03:27.597828"
+    },
+    {
+      "rule": "SNR is weakly correlated with temperature (only 3.4dB spread across full range). Low-priority optimization target (15% weight).",
+      "evidence": "Temperature sweep: SNR ranged 23.7-27.1dB across 0.0-1.0",
+      "timestamp": "2026-03-13T08:03:27.598404"
+    },
+    {
+      "rule": "consistency_steps=3 is a promising lead: SNR +3.4dB and WER\u21920.0, but THD +8.4%. Worth revisiting paired with THD reduction.",
+      "evidence": "manual_cs3_001: net composite -0.0106 but individual metrics show clear trade-off",
+      "timestamp": "2026-03-13T08:03:27.598987"
+    },
+    {
+      "rule": "Latent cosine similarity of 1.0 does NOT guarantee good audio. Mimi decoding introduces divergence via streaming state accumulation.",
+      "evidence": "KNOWLEDGE_INDEX lesson #1 + research-advisor reports: streaming vs batch correlation ~-0.04",
+      "timestamp": "2026-03-13T08:03:27.599572"
+    },
+    {
+      "rule": "ALL SEANet layers must use streaming mode. Partial streaming causes correlation to drop from 0.69 to 0.13.",
+      "evidence": "KNOWLEDGE_INDEX lesson #3: forward method used streaming for ConvTranspose1d but batch for Conv1d",
+      "timestamp": "2026-03-13T08:03:27.600130"
+    },
+    {
+      "rule": "EOS detection diverges on long sequences (>17 tokens): Rust detects 2-4 frames earlier. Root cause is cumulative precision error. Threshold -4.0 is correct.",
+      "evidence": "KNOWLEDGE_INDEX lesson #7: e.g., step 145 vs 166",
+      "timestamp": "2026-03-13T08:03:27.600735"
+    },
+    {
+      "rule": "Voice conditioning order must be [voice_embedding, text_embedding] concatenated, not added or reversed. Attention is order-sensitive.",
+      "evidence": "KNOWLEDGE_INDEX: architecture decision, verified against Python implementation",
+      "timestamp": "2026-03-13T08:03:27.601326"
+    },
+    {
+      "rule": "Config-level changes likely plateau around score 0.82-0.85. Code-level changes (Tier 2: FlowNet, Mimi decoder) needed to break through.",
+      "evidence": "Temperature sweep exhausted, consistency_steps and top_p explored with minimal gains",
+      "timestamp": "2026-03-13T08:03:27.601916"
+    },
+    {
+      "rule": "With 5-metric scoring (including MCD and correlation), the baseline score drops from 0.83 to 0.56. MCD is highly variable between runs (~90-120 range) and dominates score variance. Correlation is near-zero (0.01-0.04) and expected \u2014 cross-implementation with random FlowNet noise. THD normalization may still be too tight \u2014 values 33-44% all map to 0.0-0.18. The biggest insight: single-phrase evaluation has HIGH VARIANCE due to FlowNet random noise even with fixed seed \u2014 the same config produces different MCD each run. Multi-phrase averaging (autotune.py) is essential for reliable signal.",
+      "evidence": "Refined session: baseline=0.5596, temp=0.65 scored 0.5187, speed=0.95 scored 0.5000. Same config (temp=0.7) scored 0.5596 vs earlier 0.5256 \u2014 ~0.03 variance.",
+      "timestamp": "2026-03-13T08:53:56.394785"
+    }
+  ],
+  "last_updated": "2026-03-13T08:53:56.394795",
+  "bootstrapped": true,
+  "safe_ranges": {
+    "temperature": {
+      "min": 0.25,
+      "optimal": 0.7,
+      "max": 0.75,
+      "notes": "<0.25 too deterministic; >0.75 WER degrades. Peak at 0.7 from 20-point sweep."
+    },
+    "top_p": {
+      "min": 0.85,
+      "optimal": 0.9,
+      "max": 0.9,
+      "notes": ">0.9 catastrophic (40% WER at 0.95). Stay at 0.9."
+    },
+    "consistency_steps": {
+      "min": 1,
+      "optimal": 2,
+      "max": 3,
+      "notes": "2 is optimal. 3 is mixed (SNR+, THD-). 1 untested."
+    },
+    "speed": {
+      "min": 0.9,
+      "optimal": 1.0,
+      "max": 1.1,
+      "notes": "Untested, conservative range. Default 1.0."
+    },
+    "eos_threshold": {
+      "min": -5.0,
+      "optimal": -4.0,
+      "max": -3.5,
+      "notes": "-4.0 documented correct. Not a tuning parameter for autotuning (code-level)."
+    }
+  },
+  "interaction_rules": [
+    {
+      "rule": "Temperature and consistency_steps interact: more denoising steps amplify temperature-induced differences. Re-sweep temperature when changing consistency_steps.",
+      "params": [
+        "temperature",
+        "consistency_steps"
+      ],
+      "evidence": "manual_cs3_001 only tested at temp=0.7; interaction untested",
+      "timestamp": "2026-03-13T08:03:27.605513"
+    },
+    {
+      "rule": "WER and THD are inversely coupled in composite score. Changes that improve WER (~62% effective weight) often regress THD. Accept mixed results where composite delta > -0.01.",
+      "params": [
+        "wer",
+        "thd_percent"
+      ],
+      "evidence": "Consistent pattern across temperature sweep experiments",
+      "timestamp": "2026-03-13T08:03:27.606135"
+    }
+  ],
+  "methodology_guidance": {
+    "high_wer": {
+      "summary": "WER > 0.05 \u2014 intelligibility is the bottleneck",
+      "tier1": "Lower temperature in small steps (max 0.05), verify top_p=0.9, check EOS threshold",
+      "tier2": "Check tokenizer edge cases, verify voice conditioning order",
+      "timestamp": "2026-03-13T08:03:27.606744"
+    },
+    "high_thd": {
+      "summary": "THD > 30% \u2014 harmonic distortion is the bottleneck",
+      "tier1": "Try consistency_steps+1 (but watch WER). Speed adjustments may help.",
+      "tier2": "Investigate Mimi decoder precision (f32\u2192f64 in upsampling), post-synthesis low-pass filter",
+      "timestamp": "2026-03-13T08:03:27.607350"
+    },
+    "low_snr": {
+      "summary": "SNR < 24dB \u2014 signal quality is weak (but only 15% weight)",
+      "tier1": "Deprioritize unless all other metrics are optimized. Only 3.4dB variance across full temp range.",
+      "tier2": "Check for numerical instability in attention softmax, FlowNet noise schedule",
+      "timestamp": "2026-03-13T08:03:27.607986"
+    },
+    "high_mcd": {
+      "summary": "MCD > 6dB \u2014 spectral mismatch with reference",
+      "tier1": "Fine-tune temperature around optimal (\u00b10.05 steps)",
+      "tier2": "FlowNet time embedding, Mimi decoder architecture",
+      "timestamp": "2026-03-13T08:03:27.608606"
+    },
+    "plateau": {
+      "summary": "Composite score plateaued \u2014 config changes exhausted",
+      "tier1": "Verify all metrics are being measured (MCD, correlation). Try unexplored parameter combos.",
+      "tier2": "Move to code-level changes: FlowNet noise schedule (linear\u2192cosine), attention softmax temperature, Mimi decoder precision",
+      "timestamp": "2026-03-13T08:03:27.609249"
+    }
+  },
+  "sensitivity_rankings": {
+    "temperature": {
+      "gradient": 0.15,
+      "evidence": "20-point sweep: score ranged 0.71-0.83 across 0.0-1.0",
+      "timestamp": "2026-03-13T08:03:27.609951"
+    },
+    "top_p": {
+      "gradient": 0.01,
+      "evidence": "Only two data points (0.9 and 0.95). 0.95 was catastrophic, not a gradient signal.",
+      "timestamp": "2026-03-13T08:03:27.610599"
+    },
+    "consistency_steps": {
+      "gradient": 0.04,
+      "evidence": "Two data points (2 and 3). Small composite delta (-0.0106) for +1 step.",
+      "timestamp": "2026-03-13T08:03:27.611245"
+    },
+    "speed": {
+      "gradient": 0.0,
+      "evidence": "Not yet swept. No data.",
+      "timestamp": "2026-03-13T08:03:27.611881"
+    }
+  }
+}

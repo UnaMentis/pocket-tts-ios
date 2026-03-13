@@ -222,12 +222,12 @@ x_normed.broadcast_mul(&self.alpha)
 **Previous Problem**: Rust generated more latents than Python.
 **Resolution**: Fixed `min_gen_steps = 0` and implemented proper EOS detection with `frames_after_eos = min(5, ceil(num_text_tokens / 4))` matching Python's formula.
 
-### Waveform Correlation (CLOSED - METRIC NO LONGER APPLICABLE)
-**Previous Target**: > 0.95 correlation
-**Resolution**: With random noise enabled (matching Python production behavior), waveform correlation is no longer a meaningful metric. Different random number generators produce different latent trajectories. Audio quality is now validated through:
-- Amplitude ratio: 91% (Rust/Python)
-- RMS ratio: 98% (Rust/Python)
-- Listening tests for intelligibility
+### Waveform Correlation (REOPENED — PRIMARY METRIC)
+**Target**: > 0.95 correlation
+**Status**: ~0.0 with mismatched noise; 0.81 previously achieved with matched noise.
+**Root Cause of Regression**: v0.4.1 enabled random noise to match Python's production behavior, but Python (PyTorch mt19937) and Rust (rand crate StdRng) use incompatible RNGs. Different noise → different latent trajectories → correlation ≈ 0. This is a noise mismatch, NOT a fundamental limitation.
+**Path Forward**: Capture Python's exact noise tensors per FlowNet step as .npy files, load in Rust during validation to eliminate RNG difference. Remaining correlation gap = pure implementation differences (what we want to measure).
+**Why This Is Primary**: If correlation = 1.0, ALL other metrics are automatically perfect (output matches reference). Other metrics (WER, MCD, SNR, THD) are diagnostic — they explain WHERE divergence occurs, but correlation captures everything: phase alignment, amplitude, timing, frequency content, prosody.
 
 ### Audio Statistics (Production Mode)
 | Metric | Python | Rust | Status |

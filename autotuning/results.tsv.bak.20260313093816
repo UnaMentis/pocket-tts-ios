@@ -1,0 +1,23 @@
+experiment_id	timestamp	temperature	top_p	consistency_steps	speed	seed	composite_score	wer	mcd	snr_db	thd_percent	correlation	synthesis_time_sec	status	description
+baseline	2026-03-12T22:27:24.217643	0.7	0.9	2	1.0	42	0.776357	0.0562		25.8	38.86		4.97	baseline	baseline: default configuration
+sweep_temperature_000	2026-03-12T22:27:44.170036	0.0	0.9	2	1.0	42	0.805909	0.0000		24.1	34.51		4.99	sweep	sweep: temperature=0.0
+sweep_temperature_001	2026-03-12T22:27:59.067679	0.05	0.9	2	1.0	42	0.776233	0.0562		26.2	33.37		5.11	sweep	sweep: temperature=0.05
+sweep_temperature_002	2026-03-12T22:28:13.867588	0.1	0.9	2	1.0	42	0.763744	0.0918		25.5	27.89		5.01	sweep	sweep: temperature=0.1
+sweep_temperature_003	2026-03-12T22:28:28.875373	0.15	0.9	2	1.0	42	0.798438	0.0000		23.8	32.49		5.12	sweep	sweep: temperature=0.15
+sweep_temperature_004	2026-03-12T22:28:44.093380	0.2	0.9	2	1.0	42	0.768292	0.0118		25.7	54.50		5.27	sweep	sweep: temperature=0.2
+sweep_temperature_005	2026-03-12T22:28:59.122181	0.25	0.9	2	1.0	42	0.809467	0.0118		27.1	42.90		5.13	sweep	sweep: temperature=0.25
+sweep_temperature_006	2026-03-12T22:29:14.060544	0.3	0.9	2	1.0	42	0.814161	0.0118		24.7	25.71		5.05	sweep	sweep: temperature=0.3
+sweep_temperature_007	2026-03-12T22:29:28.992019	0.35	0.9	2	1.0	42	0.765850	0.0918		26.1	28.35		4.98	sweep	sweep: temperature=0.35
+sweep_temperature_008	2026-03-12T22:29:44.051351	0.4	0.9	2	1.0	42	0.714988	0.0918		24.0	46.82		5.20	sweep	sweep: temperature=0.4
+sweep_temperature_009	2026-03-12T22:29:58.927232	0.45	0.9	2	1.0	42	0.785748	0.0118		26.4	42.99		5.22	sweep	sweep: temperature=0.45
+sweep_temperature_010	2026-03-12T22:30:13.569481	0.5	0.9	2	1.0	42	0.795352	0.0118		25.3	35.31		4.94	sweep	sweep: temperature=0.5
+sweep_temperature_011	2026-03-12T22:30:28.147374	0.55	0.9	2	1.0	42	0.782277	0.0562		24.7	27.15		4.89	sweep	sweep: temperature=0.55
+sweep_temperature_012	2026-03-12T22:30:42.663764	0.6	0.9	2	1.0	42	0.804292	0.0000		25.9	35.16		4.80	sweep	sweep: temperature=0.6
+sweep_temperature_013	2026-03-12T22:30:57.070037	0.65	0.9	2	1.0	42	0.790587	0.0000		26.2	39.35		4.77	sweep	sweep: temperature=0.65
+sweep_temperature_014	2026-03-12T22:31:11.786070	0.7	0.9	2	1.0	42	0.825107	0.0118		24.5	26.17		5.07	sweep	sweep: temperature=0.7
+sweep_temperature_015	2026-03-12T22:31:26.215047	0.75	0.9	2	1.0	42	0.750300	0.1035		26.8	41.54		4.82	sweep	sweep: temperature=0.75
+sweep_temperature_016	2026-03-12T22:31:40.649974	0.8	0.9	2	1.0	42	0.731944	0.0667		23.7	41.62		4.71	sweep	sweep: temperature=0.8
+sweep_temperature_017	2026-03-12T22:31:55.269161	0.85	0.9	2	1.0	42	0.786729	0.0118		24.1	33.31		5.00	sweep	sweep: temperature=0.85
+sweep_temperature_018	2026-03-12T22:32:09.665436	0.9	0.9	2	1.0	42	0.790435	0.0118		24.7	36.01		4.76	sweep	sweep: temperature=0.9
+sweep_temperature_019	2026-03-12T22:32:24.249555	0.95	0.9	2	1.0	42	0.759318	0.0451		24.2	35.87		4.92	sweep	sweep: temperature=0.95
+sweep_temperature_020	2026-03-12T22:32:38.440645	1.0	0.9	2	1.0	42	0.753261	0.0918		25.3	32.07		4.56	sweep	sweep: temperature=1.0

@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -25,6 +26,41 @@ import whisper
 from jiwer import wer
 from scipy import signal
 from scipy.io import wavfile
+
+
+# ─── Text Normalization for WER ──────────────────────────────────────────────
+# Whisper often transcribes numbers as digits ("1, 2, 3") while reference text
+# uses words ("one two three"). Normalize both sides before comparison.
+
+_DIGIT_TO_WORD = {
+    "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
+    "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",
+    "10": "ten", "11": "eleven", "12": "twelve", "13": "thirteen",
+    "14": "fourteen", "15": "fifteen", "16": "sixteen", "17": "seventeen",
+    "18": "eighteen", "19": "nineteen", "20": "twenty",
+}
+
+
+def normalize_text_for_wer(text: str) -> str:
+    """Normalize text for fair WER comparison.
+
+    - Lowercases
+    - Replaces digit strings with word equivalents
+    - Strips punctuation
+    - Collapses whitespace
+    """
+    text = text.lower()
+    # Replace standalone digit sequences with word equivalents
+    text = re.sub(
+        r'\b(\d+)\b',
+        lambda m: _DIGIT_TO_WORD.get(m.group(1), m.group(1)),
+        text,
+    )
+    # Strip punctuation
+    text = re.sub(r'[^\w\s]', '', text)
+    # Collapse whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
 
 class QualityMetrics:
@@ -89,13 +125,19 @@ class QualityMetrics:
         result = self.whisper_model.transcribe(audio_path, language="en")
         hypothesis = result["text"].strip()
 
-        # Compute WER
-        error_rate = wer(reference_text, hypothesis)
+        # Normalize both sides for fair comparison (digit/word equivalence, punctuation, case)
+        ref_normalized = normalize_text_for_wer(reference_text)
+        hyp_normalized = normalize_text_for_wer(hypothesis)
+
+        # Compute WER on normalized text
+        error_rate = wer(ref_normalized, hyp_normalized)
 
         return {
             "wer": error_rate,
             "reference": reference_text,
             "hypothesis": hypothesis,
+            "reference_normalized": ref_normalized,
+            "hypothesis_normalized": hyp_normalized,
             "status": "excellent" if error_rate < 0.05 else "acceptable" if error_rate < 0.10 else "investigate"
         }
 

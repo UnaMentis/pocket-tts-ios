@@ -330,12 +330,18 @@ impl FlowLM {
     /// - Positions 0-124: Voice conditioning
     /// - Positions 125-141: Text conditioning
     /// - Positions 142+: Generated latents
+    ///
+    /// The `noise_tensors` parameter allows loading pre-captured Python noise tensors
+    /// for correlation testing. When provided, noise_tensors[step] is used instead of
+    /// random sampling at each generation step.
     pub fn generate_latents(
         &mut self,
         token_ids: &Tensor,
         voice_embedding: Option<&VoiceEmbedding>,
         num_flow_steps: usize,
         temperature: f32,
+        seed: Option<u64>,
+        noise_tensors: Option<&[Tensor]>,
     ) -> Result<Tensor> {
         // Reset caches before generation
         self.reset_cache();
@@ -573,7 +579,11 @@ impl FlowLM {
             // Generate next latent via FlowNet
             // FlowNet expects [batch, seq, hidden] but we have [batch, hidden]
             let cond = last_hidden.unsqueeze(1)?; // [1, 1, 1024]
-            let next_normalized = self.flow_net.generate(&cond, num_flow_steps, temperature, &self.device)?;
+            // Derive per-step seed for different-but-deterministic noise at each step
+            let step_seed = seed.map(|s| s.wrapping_add(step as u64));
+            // Use pre-captured noise tensor if available for this step
+            let noise_override = noise_tensors.and_then(|nt| nt.get(step));
+            let next_normalized = self.flow_net.generate(&cond, num_flow_steps, temperature, &self.device, step_seed, noise_override)?;
 
             // IMPORTANT: Do NOT denormalize here!
             // Python feeds the raw FlowNet output back to transformer.
@@ -636,6 +646,8 @@ impl FlowLM {
         voice_embedding: Option<&VoiceEmbedding>,
         num_flow_steps: usize,
         temperature: f32,
+        seed: Option<u64>,
+        noise_tensors: Option<&[Tensor]>,
         mut callback: F,
     ) -> Result<Tensor>
     where
@@ -702,7 +714,11 @@ impl FlowLM {
 
             // Generate next latent via FlowNet
             let cond = last_hidden.unsqueeze(1)?;
-            let next_normalized = self.flow_net.generate(&cond, num_flow_steps, temperature, &self.device)?;
+            // Derive per-step seed for different-but-deterministic noise at each step
+            let step_seed = seed.map(|s| s.wrapping_add(step as u64));
+            // Use pre-captured noise tensor if available for this step
+            let noise_override = noise_tensors.and_then(|nt| nt.get(step));
+            let next_normalized = self.flow_net.generate(&cond, num_flow_steps, temperature, &self.device, step_seed, noise_override)?;
 
             // *** STREAMING CALLBACK: Yield latent immediately ***
             let control = callback(&next_normalized, step, is_eos);
