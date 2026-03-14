@@ -115,20 +115,30 @@ Instead of a single agent grinding through endless debugging, this project uses 
 
 ## Running an Agent
 
-### Standard Process
+### Using Skills (Preferred)
 
-1. **Start a fresh Claude Code session** (important for fresh perspective)
+Agents are now available as Claude Code skills (slash commands). Just type:
+
+- `/verify` — Run verification tests and report metrics
+- `/research` — Deep research and fresh perspective on blockers
+- `/research transformer precision` — Focused research on a specific topic
+- `/cleanup` — Audit for debug leftovers and technical debt
+- `/progress` — Generate progress dashboard
+
+Skills live in `.claude/skills/` and inject dynamic context automatically.
+
+### Legacy: Manual Process
+
+The original prompts in `docs/prompts/` still work if you prefer fresh-session isolation:
+
+1. **Start a fresh Claude Code session**
 2. **Paste the prompt** from the relevant file in `docs/prompts/`
-3. **Let it run to completion** - don't interrupt
+3. **Let it run to completion**
 4. **The report will be saved** to `docs/audit/`
-5. **Review the report** in your implementation session
 
 ### Quick Commands
 
 ```bash
-# Open a prompt file to copy
-cat docs/prompts/verification-agent.md
-
 # Check latest reports
 ls -la docs/audit/
 
@@ -286,16 +296,32 @@ Each agent reads **PORTING_STATUS.md** to know what's been tried. The research a
 
 ---
 
-## Future Enhancements
+## Auto-Trigger Pattern
 
-Potential additions to consider:
+During long optimization runs (e.g., autotuning), the research advisor can be auto-triggered:
 
-1. **Hook-based triggers** - Claude Code hooks to remind when to run agents
-2. **Scheduled automation** - Cron jobs for daily research advisor
-3. **Hypothesis Generator** - Quick brainstorming without full research
-4. **Diff Analyzer** - Specialized agent for tensor comparison
-5. **Documentation Sync** - Agent to keep docs in sync with code
+```
+AFTER 3 CONSECUTIVE FAILURES (or score stuck ±0.02 for 5+ iterations):
+  1. Compose failure context from recent attempts
+  2. Invoke /research with context as argument
+  3. Wait for report at docs/audit/research-advisor-report-1.md
+  4. Extract top suggestion and try ONE more iteration
+  5. If still no improvement, EXIT
+```
+
+This extends sessions by at most 1 extra iteration after getting fresh research, preventing infinite loops while benefiting from "fresh eyes."
 
 ---
 
-*This orchestration pattern was developed during the Pocket TTS Rust port, January 2026.*
+## Skills vs Prompts
+
+| Method | Location | Best For |
+|--------|----------|----------|
+| Skills (`/command`) | `.claude/skills/` | Quick invocation, dynamic context injection, auto-trigger |
+| Prompts (copy-paste) | `docs/prompts/` | Fresh-session isolation, maximum "fresh eyes" benefit |
+
+Both produce the same reports in `docs/audit/`. Skills are preferred for routine use; prompts for when you want full session isolation.
+
+---
+
+*Orchestration pattern developed January 2026. Skills conversion March 2026.*

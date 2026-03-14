@@ -56,9 +56,9 @@ class NoiseCapture:
 
         def capturing_normal_(tensor, mean=0.0, std=1.0):
             result = self._original_normal_(tensor, mean=mean, std=std)
-            # Only capture noise tensors that look like FlowNet noise
-            # Shape is typically [1, 1, 32] or [1, seq, 32]
-            if tensor.dim() == 3 and tensor.shape[-1] == 32:
+            # Capture FlowNet noise tensors: shape is (1, 32) — (batch, ldim)
+            # Created in FlowLMModel.forward() with std=sqrt(temperature)
+            if tensor.dim() == 2 and tensor.shape[-1] == 32:
                 captured.append(tensor.detach().cpu().numpy().copy())
             return result
 
