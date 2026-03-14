@@ -1,0 +1,122 @@
+{
+  "benchmark": "pocket_tts_latency",
+  "mode": "sync",
+  "iterations": 3,
+  "timestamp": "2026-03-14T02:23:59.586201+00:00",
+  "summary": {
+    "avg_ttfa_ms": 1361.91,
+    "avg_rtf": 3.31,
+    "target_ttfa_ms": 200,
+    "target_rtf": 3.5
+  },
+  "results": [
+{
+    "phrase_type": "short",
+    "text_length": 12,
+    "token_count": 0,
+    "ttfa_ms": 366.29,
+    "total_synthesis_ms": 366.29,
+    "audio_duration_ms": 1040.00,
+    "rtf": 2.84,
+    "chunk_count": 1,
+    "avg_chunk_latency_ms": 366.29,
+    "first_chunk_samples": 24960
+  },
+{
+    "phrase_type": "short",
+    "text_length": 12,
+    "token_count": 0,
+    "ttfa_ms": 368.98,
+    "total_synthesis_ms": 368.98,
+    "audio_duration_ms": 1040.00,
+    "rtf": 2.82,
+    "chunk_count": 1,
+    "avg_chunk_latency_ms": 368.98,
+    "first_chunk_samples": 24960
+  },
+{
+    "phrase_type": "short",
+    "text_length": 12,
+    "token_count": 0,
+    "ttfa_ms": 321.41,
+    "total_synthesis_ms": 321.41,
+    "audio_duration_ms": 800.00,
+    "rtf": 2.49,
+    "chunk_count": 1,
+    "avg_chunk_latency_ms": 321.41,
+    "first_chunk_samples": 19200
+  },
+{
+    "phrase_type": "medium",
+    "text_length": 44,
+    "token_count": 0,
+    "ttfa_ms": 947.43,
+    "total_synthesis_ms": 947.43,
+    "audio_duration_ms": 3440.00,
+    "rtf": 3.63,
+    "chunk_count": 1,
+    "avg_chunk_latency_ms": 947.43,
+    "first_chunk_samples": 82560
+  },
+{
+    "phrase_type": "medium",
+    "text_length": 44,
+    "token_count": 0,
+    "ttfa_ms": 1026.02,
+    "total_synthesis_ms": 1026.02,
+    "audio_duration_ms": 3680.00,
+    "rtf": 3.59,
+    "chunk_count": 1,
+    "avg_chunk_latency_ms": 1026.02,
+    "first_chunk_samples": 88320
+  },
+{
+    "phrase_type": "medium",
+    "text_length": 44,
+    "token_count": 0,
+    "ttfa_ms": 960.87,
+    "total_synthesis_ms": 960.87,
+    "audio_duration_ms": 3440.00,
+    "rtf": 3.58,
+    "chunk_count": 1,
+    "avg_chunk_latency_ms": 960.87,
+    "first_chunk_samples": 82560
+  },
+{
+    "phrase_type": "long",
+    "text_length": 162,
+    "token_count": 0,
+    "ttfa_ms": 2611.12,
+    "total_synthesis_ms": 2611.12,
+    "audio_duration_ms": 9520.00,
+    "rtf": 3.65,
+    "chunk_count": 1,
+    "avg_chunk_latency_ms": 2611.12,
+    "first_chunk_samples": 228480
+  },
+{
+    "phrase_type": "long",
+    "text_length": 162,
+    "token_count": 0,
+    "ttfa_ms": 2684.19,
+    "total_synthesis_ms": 2684.19,
+    "audio_duration_ms": 9680.00,
+    "rtf": 3.61,
+    "chunk_count": 1,
+    "avg_chunk_latency_ms": 2684.19,
+    "first_chunk_samples": 232320
+  },
+{
+    "phrase_type": "long",
+    "text_length": 162,
+    "token_count": 0,
+    "ttfa_ms": 2970.84,
+    "total_synthesis_ms": 2970.84,
+    "audio_duration_ms": 10560.00,
+    "rtf": 3.55,
+    "chunk_count": 1,
+    "avg_chunk_latency_ms": 2970.84,
+    "first_chunk_samples": 253440
+  }
+  ]
+}

@@ -23,6 +23,9 @@ __pycache__/
 
 # Validation debug outputs (transient)
 # NOTE: validation/reference_outputs/ is INTENTIONALLY tracked (ground truth)
+# But noise tensors and latent dumps are large binary artifacts, not tracked
+validation/reference_outputs/noise/
+validation/reference_outputs/*_latents.npy
 test_output.wav
 validation/debug_outputs/
 validation/mimi_debug/

@@ -55,8 +55,19 @@ ITERATION LOOP (max 5):
      - If improved: consecutive_failures = 0
   9. CHECK EXIT CONDITIONS:
      - If iteration_count >= 5 → EXIT
-     - If consecutive_failures >= 2 → EXIT (early)
+     - If consecutive_failures >= 3 → RESEARCH BREAKOUT (see below)
+     - If consecutive_failures >= 2 AND no research breakout available → EXIT (early)
      - Otherwise → next iteration
+
+RESEARCH BREAKOUT (on 3 consecutive failures):
+  1. Compose context: "Composite score stuck at {score}. Lowest component: {name} ({value}).
+     Last 3 attempts: {descriptions}. Frame 0 latent correlation: {value}."
+  2. Invoke /research with that context
+  3. Read docs/audit/research-advisor-report-1.md
+  4. Extract the top High Confidence suggestion
+  5. Try ONE more iteration based on the fresh idea
+  6. If still no improvement → EXIT for real
+  Note: Research breakout happens at most ONCE per session.
 
 SESSION END:
   1. Write arc summary to memory (add_rule or update promising leads)

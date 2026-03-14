@@ -269,23 +269,17 @@ This project uses a multi-agent collaboration pattern for development. See [docs
 
 ### Agent Quick Reference
 
-| When | Run This Agent |
-|------|----------------|
-| After code changes to `src/models/` or `src/modules/` | **Verification Agent** - checks numerical accuracy |
-| When stuck for >1 hour | **Research Advisor** - external research and fresh hypotheses |
-| Before committing changes | **Cleanup Auditor** - finds debug code and technical debt |
-| Weekly or for planning | **Progress Tracker** - dashboard with metrics and timeline |
+| When | Skill | What It Does |
+|------|-------|--------------|
+| After code changes to `src/models/` or `src/modules/` | `/verify` | Noise-matched correlation test, composite scoring, latency |
+| When stuck for >1 hour | `/research` | External research, methodology validation, fresh hypotheses |
+| Before committing changes | `/cleanup` | Finds debug code, dead code, technical debt |
+| Weekly or for planning | `/progress` | Dashboard with correlation history, velocity, timeline |
 
 ### Running an Agent
 
-1. Start a **fresh** Claude Code session
-2. Paste the prompt from `docs/prompts/[agent-name].md`
-3. Let it complete and save its report to `docs/audit/`
-4. Review the report in your main session
+**Preferred:** Type the skill command (e.g., `/verify`, `/research transformer precision`)
 
-### Available Prompts
+**Alternative:** For full session isolation, paste prompts from `docs/prompts/` into a fresh session.
 
-- `docs/prompts/verification-agent.md` - Numerical accuracy testing
-- `docs/prompts/research-advisor.md` - External research for blockers
-- `docs/prompts/cleanup-audit.md` - Technical debt inventory
-- `docs/prompts/progress-tracker.md` - Progress dashboard
+All agents save reports to `docs/audit/` with 2-version rotation. See `docs/prompts/AGENT_ORCHESTRATION.md` for the full orchestration guide.

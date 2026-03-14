@@ -353,7 +353,12 @@ impl FlowNet {
         // use it directly to eliminate RNG differences for correlation testing.
         let mut current = if let Some(noise) = noise_override {
             eprintln!("[FlowNet] Using pre-captured noise tensor (shape: {:?})", noise.dims());
-            noise.clone()
+            // Python noise is (batch, ldim) i.e. (1, 32) — reshape to (batch, 1, ldim)
+            if noise.dims().len() == 2 {
+                noise.unsqueeze(1)?
+            } else {
+                noise.clone()
+            }
         } else {
             // Python uses: std = temp^0.5, and samples from Normal(0, std)
             // Python default temperature = 0.7, so std ≈ 0.8367
