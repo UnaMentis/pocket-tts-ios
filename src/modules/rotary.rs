@@ -53,6 +53,7 @@ impl RotaryEmbedding {
 
     /// Apply rotary embeddings to query and key tensors
     /// Input shape: [batch, seq, num_heads, head_dim]
+    /// Uses candle_nn::rotary_emb::rope_i() for interleaved RoPE (matches Kyutai's Moshi Rust)
     pub fn forward(&self, q: &Tensor, k: &Tensor, offset: usize) -> Result<(Tensor, Tensor)> {
         let seq_len = q.dim(1)?;
         let end = offset + seq_len;
@@ -64,45 +65,21 @@ impl RotaryEmbedding {
             )));
         }
 
-        // cos/sin have shape [seq, half_dim]
+        // cos/sin have shape [seq, half_dim] — matches rope_i's expected (seq_len, n_embd/2)
         let cos = self.cos_cache.narrow(0, offset, seq_len)?;
         let sin = self.sin_cache.narrow(0, offset, seq_len)?;
 
-        let q_rotated = self.apply_rotary(q, &cos, &sin)?;
-        let k_rotated = self.apply_rotary(k, &cos, &sin)?;
+        // rope_i expects (B, H, T, D), our input is (B, T, H, D)
+        let q_bhtd = q.transpose(1, 2)?.contiguous()?;
+        let k_bhtd = k.transpose(1, 2)?.contiguous()?;
+
+        let q_rotated = candle_nn::rotary_emb::rope_i(&q_bhtd, &cos, &sin)?;
+        let k_rotated = candle_nn::rotary_emb::rope_i(&k_bhtd, &cos, &sin)?;
+
+        // Transpose back to (B, T, H, D)
+        let q_rotated = q_rotated.transpose(1, 2)?;
+        let k_rotated = k_rotated.transpose(1, 2)?;
 
         Ok((q_rotated, k_rotated))
-    }
-
-    fn apply_rotary(&self, x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
-        // x has shape [batch, seq, heads, head_dim]
-        let (batch, seq, heads, head_dim) = x.dims4()?;
-        let half_dim = head_dim / 2;
-
-        // Kyutai Pocket uses INTERLEAVED real/imaginary pairs:
-        // [x0, x1, x2, x3, ...] -> [(x0,x1), (x2,x3), ...] where first is real, second is imaginary
-        // Reshape to [batch, seq, heads, half_dim, 2] to access pairs
-        let x = x.reshape((batch, seq, heads, half_dim, 2))?;
-
-        // Extract real (even indices) and imaginary (odd indices) components
-        let xr = x.narrow(4, 0, 1)?.squeeze(4)?; // [batch, seq, heads, half_dim]
-        let xi = x.narrow(4, 1, 1)?.squeeze(4)?; // [batch, seq, heads, half_dim]
-
-        // cos/sin have shape [seq, half_dim]
-        // Reshape to [1, seq, 1, half_dim] for broadcasting with [batch, seq, heads, half_dim]
-        let cos = cos.unsqueeze(0)?.unsqueeze(2)?;
-        let sin = sin.unsqueeze(0)?.unsqueeze(2)?;
-
-        // Complex rotation: (xr + i*xi) * (cos + i*sin) = (xr*cos - xi*sin) + i*(xr*sin + xi*cos)
-        let rotated_r = (xr.broadcast_mul(&cos)? - xi.broadcast_mul(&sin)?)?;
-        let rotated_i = (xr.broadcast_mul(&sin)? + xi.broadcast_mul(&cos)?)?;
-
-        // Stack back to interleaved format: [(r0,i0), (r1,i1), ...]
-        let rotated_r = rotated_r.unsqueeze(4)?; // [batch, seq, heads, half_dim, 1]
-        let rotated_i = rotated_i.unsqueeze(4)?; // [batch, seq, heads, half_dim, 1]
-        let stacked = Tensor::cat(&[&rotated_r, &rotated_i], 4)?; // [batch, seq, heads, half_dim, 2]
-
-        // Reshape back to [batch, seq, heads, head_dim]
-        stacked.reshape((batch, seq, heads, head_dim))
     }
 }

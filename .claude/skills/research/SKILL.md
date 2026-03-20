@@ -22,6 +22,9 @@ You are a **Research Advisor** for the Pocket TTS Rust/Candle port for iOS. Anot
 **Recent git activity:**
 !`git log --oneline -10 2>/dev/null`
 
+**Approaches already tried (DO NOT re-suggest these):**
+!`cat docs/audit/approaches-tried.md 2>/dev/null | head -80 || echo "No approaches-tried log"`
+
 **Focus area (if provided):** $ARGUMENTS
 
 ## Critical Context You Must Know
@@ -29,20 +32,32 @@ You are a **Research Advisor** for the Pocket TTS Rust/Candle port for iOS. Anot
 ### The Primary Metric
 **Waveform correlation is THE primary metric (50% weight in composite scoring).** If correlation = 1.0, ALL other metrics are automatically perfect. Other metrics (WER, MCD, SNR, THD) are diagnostic — they tell you WHERE divergence occurs, not whether it exists.
 
-### Noise Capture Infrastructure (Built, Working)
+### Current Metrics (as of 2026-03-19)
+With correctly-aligned noise tensors:
+- **End-to-end audio correlation: 0.839** (phrase_00, noise-matched)
+- **Per-frame: median 0.76, max 0.98, 10/45 frames > 0.9**
+- **Frames 0-1 still weak** (~0.18, -0.09) — early FlowNet conditioning divergence
+- **Frames 3+ recover well** (0.88-0.98)
+- Without noise matching (seed-only): correlation ~0 — RNG states differ due to text-prompting FlowNet call
+
+### Noise Capture Infrastructure (Built, Working — with off-by-one fix)
 - `validation/reference_harness.py` captures FlowNet noise tensors as `.npy` files via `--capture-noise --seed 42`
 - Rust loads these via `--noise-dir validation/reference_outputs/noise/`
-- This eliminates RNG differences between Python (PyTorch mt19937) and Rust (rand crate StdRng)
+- **CRITICAL**: `noise_step_000.npy` is Python's text-prompting noise (FlowNet output discarded). Rust must use `noise_tensors[step + 1]` to skip it. This fix was applied 2026-03-18 and improved correlation from ~0 to 0.839.
 - 147 noise tensor files captured across 4 test phrases
 
-### The Known Bottleneck: Transformer Divergence
-With identical noise tensors loaded:
-- **Frame 0 latent correlation: 0.72** — FlowNet gets same noise but different conditioning (transformer output)
-- **Frame 2+ correlation: drops to ~0** — autoregressive compounding amplifies small differences
-- **End-to-end audio correlation: ~0** — compound of transformer + Mimi divergence
-- **Mimi decoder alone: ~0.74 correlation** — when given identical latents
+### Python Generation Pipeline (Key Understanding)
+1. `get_state_for_audio_prompt(voice)` — 125 voice positions → transformer → KV cache. FlowNet runs but output discarded.
+2. `_generate()` text prompting — text_tokens → transformer → KV cache. FlowNet runs, noise captured as step_000, output **DISCARDED** (no assignment).
+3. `_autoregressive_generation()` — starts with `NaN → bos_emb` → `input_linear(bos)` → transformer → FlowNet → latent 0 (uses noise_step_001).
+4. Subsequent steps: `prev_latent → input_linear → transformer → FlowNet → next_latent`.
 
-The transformer produces different 1024-dim hidden states than Python. This is the root cause.
+### The Remaining Bottleneck: Transformer Hidden State Divergence
+With correctly-aligned noise, the remaining ~16% correlation gap comes from:
+- Transformer hidden states differ between Python and Rust
+- FlowNet gets different 1024-dim conditioning → different velocity fields → different latents even with same noise
+- The divergence is worst at early frames (0-1) and recovers by frame 3+
+- **softmax_last_dim and rope_i changes had ZERO measurable impact** — the divergence source is elsewhere
 
 ### Composite Scoring (autotuning/scorer.py)
 - Correlation: 50% weight (PRIMARY)
@@ -59,6 +74,7 @@ The transformer produces different 1024-dim hidden states than Python. This is t
 - Read `PORTING_STATUS.md` — what's fixed, what's broken, what's been tried
 - Read `docs/project-story.md` — full narrative including the "losing the plot" chapter
 - Read `docs/KNOWLEDGE_INDEX.md` if it exists — compact project knowledge
+- **Read `docs/audit/approaches-tried.md`** — structured log of what optimization approaches have been tried and their results. **DO NOT suggest approaches already listed here.**
 
 **1.2 Review latest reports:**
 - Read `docs/audit/verification-report-1.md` — current metrics

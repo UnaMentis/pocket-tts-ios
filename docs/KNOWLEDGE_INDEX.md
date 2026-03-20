@@ -3,34 +3,37 @@
 Distilled from PORTING_STATUS.md (1,491 lines of session logs) into a compact reference.
 This is the "institutional memory" — what works, what doesn't, and why.
 
-Last distilled: 2026-03-10
+Last distilled: 2026-03-19
 
 ## Current State
 
-**Status**: Production ready. All components functional. 91 unit tests passing.
+**Status**: Production ready. Correlation optimization in progress.
+
+**Key metric**: End-to-end waveform correlation = **0.839** (noise-matched, phrase_00). Target: >0.95.
 
 | Component | Status | Key Detail |
 |-----------|--------|------------|
 | Tokenizer | Match | SentencePiece, matches Python exactly |
-| FlowLM (6-layer transformer) | Match | ~70M params, correct architecture |
-| FlowNet (consistency sampling) | Working | Random noise enabled (production mode) |
-| Mimi Decoder | Working | Full streaming with replicate padding |
+| FlowLM (6-layer transformer) | Working | Hidden states diverge slightly from Python — remaining bottleneck |
+| FlowNet (consistency sampling) | Working | Noise-matched with off-by-one correction |
+| Mimi Decoder | Working | Full streaming with replicate padding, ~0.74 standalone correlation |
 | SEANet | Working | Streaming Conv1d + ConvTranspose1d |
 | EOS Detection | Working | Threshold -4.0, natural detection |
 | Audio Output | Working | Int16 PCM WAV, 24kHz, healthy amplitudes |
+| Noise Alignment | Fixed | `step + 1` offset to skip text-prompting noise (2026-03-18) |
 
 ## Critical Lessons Learned
 
-### 1. FlowNet Noise Is the Dominant Source of Divergence
-- **Discovery**: Rust used zeros (DEBUG mode) while Python uses `normal_(mean=0, std=sqrt(temp))`
-- **Impact**: This single difference accounts for most latent divergence between Rust and Python
-- **Resolution**: Enabled random noise in Rust. Latents now naturally differ between implementations — this is expected and correct
-- **Implication**: Exact latent matching is impossible with random noise. Quality must be judged by audio intelligibility, not waveform correlation
+### 1. Noise Alignment Is Critical — Off-by-One Destroyed Correlation
+- **Discovery (2026-01)**: Rust used zeros (DEBUG mode) while Python uses `normal_(mean=0, std=sqrt(temp))`. Fixed by enabling random noise.
+- **Discovery (2026-03-18)**: Noise capture files were off-by-one! Python's `generate_audio()` makes a text-prompting FlowNet call that generates `noise_step_000.npy` but **discards the output**. Autoregressive step 0 uses `noise_step_001.npy`. Rust was using `noise_step_000` for step 0.
+- **Fix**: `noise_tensors[step + 1]` in flowlm.rs. Correlation improved from ~0 to **0.839**.
+- **Implication**: Waveform correlation IS meaningful with properly-aligned noise. It is the PRIMARY metric (50% weight).
 
-### 2. Batch vs Streaming Produces Fundamentally Different Audio
-- **Discovery**: Python streaming correlation with Python batch is ~-0.04 (essentially uncorrelated)
-- **Impact**: Don't expect high Rust-vs-Python waveform correlation
-- **Resolution**: Compare quality metrics (WER, MCD, SNR) not raw waveform correlation
+### 2. Waveform Correlation IS the Right Metric (with Noise Matching)
+- **Previous belief (OUTDATED)**: "Don't expect high Rust-vs-Python waveform correlation" — this was wrong, caused by noise misalignment
+- **Current understanding**: With correctly-aligned noise, correlation = 0.839. The remaining ~16% gap is real transformer divergence.
+- **Without noise matching**: Correlation is ~0 because Python's text-prompting FlowNet call advances the RNG, making all subsequent noise different even with same seed.
 
 ### 3. SEANet Requires Full Streaming for ALL Layers
 - **Bug**: Forward method used streaming for ConvTranspose1d but batch mode for Conv1d
@@ -92,7 +95,11 @@ Text → SentencePiece → FlowLM (transformer, 6 layers)
 | EOS threshold | -4.0 | Logit threshold for end-of-speech detection |
 | frames_after_eos | min(5, ceil(num_text_tokens/4)) | Post-EOS padding for natural endings |
 
-## Things That Were Tried and Failed
+## Things That Were Tried
+
+**See also**: `docs/audit/approaches-tried.md` for a structured log of recent optimization attempts with measured results.
+
+### Things That Failed
 
 ### Amplitude Scaling (Removed)
 - Added 5x amplitude scaling to compensate for low output
@@ -137,3 +144,4 @@ Text → SentencePiece → FlowLM (transformer, 6 layers)
 | `autotuning/memory.py` | Structured experiment memory |
 | `autotuning/autotune.py` | Automated tuning loop |
 | `autotuning/program.md` | AI agent instructions for autonomous tuning |
+| `docs/audit/approaches-tried.md` | Structured log of optimization attempts and results |

@@ -92,8 +92,8 @@ impl MultiHeadAttention {
             attn_weights
         };
 
-        // Softmax
-        let attn_weights = candle_nn::ops::softmax(&attn_weights, candle_core::D::Minus1)?;
+        // Softmax (use softmax_last_dim for better numerical precision, matches Kyutai's Moshi Rust)
+        let attn_weights = candle_nn::ops::softmax_last_dim(&attn_weights)?;
 
         // Weighted sum of values
         let attn_output = attn_weights.matmul(&v)?;
@@ -354,8 +354,8 @@ impl FusedMultiHeadAttention {
             attn_weights
         };
 
-        // Softmax
-        let attn_weights = candle_nn::ops::softmax(&attn_weights, candle_core::D::Minus1)?;
+        // Softmax (use softmax_last_dim for better numerical precision, matches Kyutai's Moshi Rust)
+        let attn_weights = candle_nn::ops::softmax_last_dim(&attn_weights)?;
 
         // DEBUG: Log softmax attention weights
         if attn_call == 6 {

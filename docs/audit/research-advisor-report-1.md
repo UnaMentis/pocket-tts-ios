@@ -1,131 +1,181 @@
 # Research Advisor Briefing
 
-**Date:** 2026-03-13
-**Current Blocker:** Transformer divergence -- frame 0 latent correlation 0.72 with matched noise
-**Research Focus:** Transformer precision, Kyutai Moshi Rust reference, Candle precision issues, methodology validation
+**Date:** 2026-03-19
+**Current Blocker:** Transformer hidden state divergence (~16% correlation gap)
+**Research Focus:** Python source code audit, F.scaled_dot_product_attention semantics, RoPE frequency computation, LayerNorm variance, FlowNet RMSNorm, GELU precision, causal mask format, KV cache accumulation
+**Triggered By:** Manual invocation after establishing noise-matched baseline at 0.839 correlation
 
 ---
 
 ## Situational Summary
 
-The Rust/Candle port of Pocket TTS is marked "production ready" with random noise enabled, producing intelligible speech with 91% amplitude ratio and 98% RMS ratio vs Python. However, when noise tensors are matched (captured from Python and loaded in Rust), waveform correlation remains at ~0.72 for frame 0 and drops to ~0 by frame 2+. This means the **transformer produces different 1024-dim hidden states** than Python, and autoregressive compounding amplifies the error.
+The Rust/Candle port achieves 0.839 end-to-end waveform correlation with Python (noise-matched, phrase_00), up from ~0 after fixing the noise off-by-one bug on 2026-03-18. The remaining ~16% gap is real transformer hidden state divergence. Frames 0-1 are weakest (~0.18, -0.09) while frames 3+ recover well (0.88-0.98), and 10/45 frames exceed 0.9 correlation. The pattern suggests the divergence is worst during early conditioning (where the transformer processes BOS + FlowNet noise for the first time) and diminishes as the autoregressive loop self-corrects.
 
-The Mimi decoder alone achieves ~0.74 correlation when given identical latents, confirming the transformer is the bottleneck.
+This report is based on a thorough reading of the **actual Python source code** installed at `.venv/lib/python3.14/site-packages/pocket_tts/`, the Kyutai Moshi Rust reference at `github.com/kyutai-labs/moshi/tree/main/rust/moshi-core/src/transformer.rs`, Candle precision issue reports, and the current Rust implementation. Previous reports (2026-03-13) recommended switching to `softmax_last_dim` and `rope_i`, both of which were applied with zero measurable impact.
 
-### What Changed Since Last Report (2026-01-30)
-
-1. Previous report declared "production ready" with random noise, noting correlation is meaningless with different RNGs
-2. Noise-matched testing was implemented (loading Python .npy files in Rust) to isolate pure implementation differences
-3. Frame 0 correlation of 0.72 confirms a real transformer-level discrepancy exists
-4. The issue compounds autoregressively, destroying correlation by frame 2+
+The primary new finding in this report is a **critical difference in how Python and Rust compute attention**: Python uses `F.scaled_dot_product_attention()` which is a fused kernel with specific numerical behavior, while Rust uses manual matmul + softmax + matmul. Additionally, there are several smaller but compounding differences in RoPE frequency computation, attention mask format, and the autoregressive state management.
 
 ---
 
 ## Methodology Validation
 
-### Is noise-matched correlation the right approach?
+### Is noise-matched waveform correlation the right primary metric?
 
-**Yes, but with caveats.** Noise-matched testing is the gold standard for isolating implementation differences. If Rust and Python receive identical noise tensors and identical model weights, any correlation gap is a pure implementation bug. The 0.72 frame-0 correlation is strong evidence of a real difference.
+**Yes, emphatically.** The jump from ~0 to 0.839 after fixing the noise off-by-one bug validated this approach. With identical noise, correlation directly measures implementation fidelity. The remaining 0.161 gap is real and attributable to transformer hidden state divergence.
 
-**However**, correlation at the waveform level conflates multiple sources of error:
-- Transformer hidden state differences
-- FlowNet processing differences
-- Mimi decoder differences
+### Should we target 0.95 or settle for 0.839?
 
-### Better diagnostic approach: Layer-by-layer intermediate comparison
+The per-frame analysis is informative: frames 3+ achieve 0.88-0.98, suggesting the implementations converge once the autoregressive loop is established. The early-frame weakness (0.18, -0.09) suggests a conditioning-phase divergence that compounds in the first 2-3 steps then attenuates. Achieving >0.95 overall requires fixing the early-frame divergence specifically.
 
-Instead of only comparing final waveforms, the most effective approach is to **dump and compare intermediate tensors at each stage**:
+### Recommended diagnostic approach
 
-1. **After each transformer layer**: Compare hidden states layer-by-layer to find where divergence first appears
-2. **After out_norm**: Compare the 1024-dim conditioning vector fed to FlowNet
-3. **After FlowNet**: Compare the 32-dim latent
-4. **After Mimi**: Compare the waveform
+The most effective next step is a **step-0 intermediate tensor dump** comparing Python vs Rust at every stage:
+1. After `input_linear(bos)` - should match exactly (same weights, same input)
+2. After each transformer layer's norm1, attention, norm2, MLP
+3. After `out_norm`
+4. After FlowNet `cond_embed`
+5. After FlowNet velocity prediction
 
-This narrows the search from "somewhere in the transformer" to a specific layer and operation.
-
-### Recommended: Per-attention-head comparison
-
-Within each transformer layer, compare:
-- Q, K, V projections (before and after RoPE)
-- Attention weights (softmax output)
-- Attention output (after value weighting)
-- MLP output
-
-This identifies whether the issue is in attention computation, RoPE, or MLP.
+This narrows "transformer divergence" to a specific operation within a specific layer.
 
 ---
 
 ## Key Research Findings
 
-### From Official Kyutai Sources (Moshi Rust)
+### 1. F.scaled_dot_product_attention vs Manual Attention (HIGH IMPACT)
 
-Kyutai maintains their own Rust implementation of the Moshi system at `github.com/kyutai-labs/moshi/tree/main/rust/moshi-core`. Key findings from examining their code:
+**Finding:** Python uses `F.scaled_dot_product_attention(q, k, v, attn_mask)` (line 117 of `pocket_tts/modules/transformer.py`). Rust uses manual `q.matmul(&k.t()) * scale + mask -> softmax -> matmul(&v)`.
 
-**1. RoPE: They use `candle_nn::rotary_emb::rope_i()` (interleaved)**
-```rust
-candle_nn::rotary_emb::rope_i(&qk.to_dtype(DType::F32)?, &self.cos, &self.sin)?
-    .to_dtype(qk_dtype)
+**Why this matters:** PyTorch's SDPA on CPU with float32 uses the "math" backend, which is a fused C++ implementation. Key differences:
+
+1. **Scaling is fused**: SDPA computes `softmax(Q @ K^T / sqrt(d) + mask) @ V` in a single kernel. The Rust code first computes `Q @ K^T`, then multiplies by scale, then adds mask, then softmax, then matmul V. Each step materializes an intermediate tensor, accumulating floating-point rounding at each step.
+
+2. **Mask format differs**: Python's `_materialize_causal_mask` produces `log(tril(ones))` which gives `0.0` for allowed positions and `-inf` for masked positions. The Rust `create_causal_mask` produces the same values. However, SDPA may handle the mask addition differently internally (it can accept both additive masks and boolean masks with different codepaths).
+
+3. **Softmax internal precision**: SDPA's math backend keeps all intermediates in the input dtype. When input is float32, this is the same as the Rust code. But the accumulation order within the fused kernel differs from Candle's `softmax_last_dim`.
+
+**Estimated impact:** Small per-operation (~1e-5 MAE per matmul per Candle issue #3032), but compounds across 6 layers, 16 heads, and hundreds of autoregressive steps.
+
+**How to test:** Replace the manual attention in Rust with a single fused operation. Unfortunately Candle does not have a direct SDPA equivalent. However, you can measure the divergence by dumping Q, K, V from Python (just before SDPA) and computing attention manually in Python to compare against the fused result.
+
+### 2. RoPE Frequency Computation Order (MEDIUM IMPACT)
+
+**Finding:** Python computes frequencies **on-the-fly** each forward call:
+```python
+ds = torch.arange(D // 2, dtype=torch.float32)
+freqs = torch.exp(ds * (-math.log(max_period) * 2 / D))
+ts = torch.arange(T, dtype=torch.float32) + offset
+rotr = torch.cos(freqs * ts)
 ```
-Critical details:
-- They convert to F32 before applying RoPE, then convert back to original dtype
-- They use Candle's built-in `rope_i` function which expects shape `(B, H, T, D)` (post-transpose)
-- Our implementation applies RoPE pre-transpose with shape `(B, T, H, D)` using a custom `apply_rotary` function
 
-**Our custom RoPE implementation is mathematically equivalent but differs in computation order**, which can produce different floating-point results. Switching to `candle_nn::rotary_emb::rope_i()` would align with the official reference and eliminate this as a variable.
-
-**2. Softmax: They use `candle_nn::ops::softmax_last_dim()`**
+Rust **precomputes** a cache:
 ```rust
-let ws = candle_nn::ops::softmax_last_dim(&pre_ws)?;
+let inv_freq: Vec<f32> = (0..half_dim)
+    .map(|i| 1.0 / base.powf(2.0 * i as f32 / dim as f32))
+    .collect();
+let freqs = positions.matmul(&inv_freq.unsqueeze(0)?)?;
+let cos_cache = freqs.cos()?;
+let sin_cache = freqs.sin()?;
 ```
-Our code uses `candle_nn::ops::softmax(&attn_weights, D::Minus1)`. According to the Candle source:
-- `softmax()` is a generic implementation using high-level tensor ops (max, sub, exp, sum, div)
-- `softmax_last_dim()` uses **backend-specific optimized kernels** with `rayon::par_chunks` on CPU
 
-These two functions compute the same math but with different accumulation patterns and parallelism, producing slightly different floating-point results. The `softmax_last_dim` variant is both faster and matches what Kyutai uses.
+While mathematically equivalent, there are subtle precision differences:
+- `exp(d * C)` vs `1.0 / base.powf(2*d/D)` - different function call paths for computing the same frequency
+- `freqs * ts` (element-wise) vs `positions.matmul(&inv_freq)` (outer product) - for this specific case (outer product of 1D vectors), the results should be identical since there's no summation
 
-**3. Attention scaling: They use `f64` for the scale factor**
+But Candle's `rope_i()` function operates on the precomputed cos/sin cache, while Python computes cos/sin fresh each call from element-wise operations. The cos/sin values themselves should be identical (both are applied to `position * frequency` pairs), but any difference in the frequency values propagates to every subsequent attention computation.
+
+**How to test:** Dump the cos/sin values from Python for positions 0-200 and compare against Rust's precomputed cache. Any difference > 1e-7 indicates a frequency computation discrepancy.
+
+### 3. Python KV Cache Uses Pre-allocated Scatter, Rust Uses Tensor::cat (LOW-MEDIUM IMPACT)
+
+**Finding:** Python pre-allocates a NaN-filled cache tensor and uses array slicing to insert new K/V values:
+```python
+cache[0, :, current_end:current_end + k.shape[1]] = k
+valid = cache[:, :, :current_end + k.shape[1]]
+```
+
+Rust uses `Tensor::cat` to concatenate:
 ```rust
-let pre_ws = (pre_ws * (head_dim as f64).powf(-0.5))?;
+let k_new = Tensor::cat(&[k_cache, &k], 2)?;
 ```
-Our code uses `f32`:
+
+**Why this matters:** `Tensor::cat` creates a new tensor each step, copying all previous cache entries. This doesn't change values, but the memory layout and alignment may differ from Python's in-place update. More importantly, if there are any NaN propagation issues or if the cache retrieval order affects attention computation, this could introduce differences.
+
+**Estimated impact:** Likely zero for correctness, but worth validating that the cached K/V values are bit-identical to what Python produces at each step.
+
+### 4. Python's QKV Split Uses `view + unbind`, Not `narrow` (ZERO IMPACT - VERIFIED)
+
+The Python code uses `projected.view(b, t, 3, h, d)` then `torch.unbind(packed, dim=2)`. Rust uses `narrow` on the last dimension. I verified these produce identical results since the reshape interprets the flat 3072-dim output as `[3][16][64]` in C-contiguous order, making Q = first 1024, K = next 1024, V = last 1024 -- same as Rust's narrow.
+
+### 5. Python Uses `nn.LayerNorm` (Built-in), Rust Uses Custom Implementation (LOW IMPACT)
+
+**Finding:** The FlowLM transformer layers use `nn.LayerNorm(d_model, eps=1e-5)` which is PyTorch's highly optimized C++ implementation. The Rust code uses a custom implementation:
 ```rust
-scale: 1.0 / (head_dim as f32).sqrt(),
-// applied as:
-(attn_weights * self.scale as f64)?
+let mean = x.mean_keepdim(D::Minus1)?;
+let x_centered = x.broadcast_sub(&mean)?;
+let variance = x_centered.sqr()?.mean_keepdim(D::Minus1)?;
+let x_normed = x_centered.broadcast_div(&(variance + self.eps)?.sqrt()?)?;
 ```
-The scale value `1/sqrt(64) = 0.125` is exactly representable in both f32 and f64, so this is not a source of error. However, computing `(head_dim as f64).powf(-0.5)` vs `1.0 / (head_dim as f32).sqrt()` could differ for non-power-of-2 head dims.
 
-**4. KV cache: They use scatter-based pre-allocated cache**
-Kyutai's `ScatteredKvCache` pre-allocates a fixed-size tensor and uses `scatter_set` to insert new K/V values. Our code uses `Tensor::cat` to concatenate, which creates new tensors each step. Functionally equivalent but different memory patterns.
+Both use biased variance (dividing by N). However, PyTorch's built-in LayerNorm is a single fused C++ kernel that computes mean, variance, normalization, and affine transform in one pass. The Rust code performs 5 separate tensor operations, each materializing an intermediate. The accumulation order for `mean_keepdim` and the variance computation may differ.
 
-**5. Python uses `F.scaled_dot_product_attention`**
-The Python Pocket TTS code uses PyTorch's fused SDPA kernel, which has its own numerical characteristics:
-- On CPU with float32, it typically uses the "math" backend
-- The "math" backend computes: `attn = softmax(Q @ K^T / sqrt(d) + mask) @ V`
-- This may differ from our manual implementation in operation ordering
+**How to test:** Dump the output of `norm1` from Python layer 0 at step 0 and compare to Rust.
 
-### From Candle/Framework Research
+### 6. Python Transformer Uses `F.gelu()` (Default = Exact erf), Rust Uses `gelu_erf()` (ZERO IMPACT - MATCHES)
 
-**Known precision issue (GitHub #3032)**:
-- MSE between Candle and PyTorch matmul: ~4.1e-10 to ~8.2e-11
-- MAE: ~0.000006 to ~0.000015 per operation
-- Maintainer confirms: "errors accrue layer by layer for each token"
-- Root cause: floating-point arithmetic is not associative; different operation orders produce different results
+**Finding:** The Python `StreamingTransformerLayer._ff_block` uses:
+```python
+update = self.linear2(F.gelu(self.linear1(x)))
+```
 
-**Output divergence issue (#2031)**:
-- Candle vs PyTorch diverge on Mistral-7B token generation even with greedy decoding
-- Maintainer (Laurent Mazare): "we accumulate with f32 in the softmax whereas pytorch may well do something slightly different"
-- Different CUDA algorithm implementations and accumulation strategies
-- Considered expected behavior -- exact token matching is unrealistic
+`F.gelu()` without `approximate` parameter defaults to `approximate='none'`, which uses the exact erf-based GELU: `x * 0.5 * (1.0 + erf(x / sqrt(2.0)))`.
 
-**Key insight**: For autoregressive models, even tiny per-step errors compound. A 1e-5 error in attention weights, passed through 6 layers, then fed back as input for the next step, can diverge significantly after 10-20 steps. This is consistent with the observed 0.72 frame-0 correlation dropping to ~0 by frame 2+.
+The Rust code uses `x.gelu_erf()` which also computes the exact erf-based GELU.
 
-### From Pocket TTS Community
+**Impact:** These should produce identical results. No change needed.
 
-- **wasm-pocket-tts** by LaurentMazare (Candle maintainer): Uses XN framework, not Candle. Repo not found (may be private or renamed).
-- **pocket-tts-candle** by babybirdprd: Our code derives from this. No published correlation metrics.
-- **PocketTTS.cpp** by VolgaGerm: C++ runtime using ONNX. ONNX export from Python ensures exact numerical match by definition.
-- No public reports of anyone achieving >0.9 correlation between a Candle port and PyTorch for an autoregressive transformer of this size.
+### 7. Python FlowNet MLP Uses SiLU, Rust Matches (ZERO IMPACT)
+
+**Finding:** The FlowNet's ResBlock MLP and AdaLN modulation both use `nn.SiLU()` in Python. The Rust code uses `candle_nn::ops::silu()`. These should match.
+
+### 8. Layer Scale Not Used in FlowLM Transformer (VERIFIED)
+
+**Finding:** The `StreamingTransformer.from_pydantic_config()` does NOT pass `layer_scale`:
+```python
+return cls(
+    d_model=config.d_model, num_heads=config.num_heads,
+    num_layers=config.num_layers, dim_feedforward=dim_feedforward,
+    max_period=float(config.max_period), kind="flow_lm",
+)
+```
+
+This means `layer_scale=None`, so `self.layer_scale_1 = nn.Identity()`. The Rust code also has no layer_scale. Matches.
+
+### 9. Kyutai Moshi Rust Reference Findings (INFORMATIONAL)
+
+From examining `github.com/kyutai-labs/moshi/blob/main/rust/moshi-core/src/transformer.rs`:
+
+- **Attention**: Uses manual matmul + softmax (NOT fused SDPA), with `softmax_last_dim()` and scaling via `(head_dim as f64).powf(-0.5)`. For BF16 + CUDA, it uses flash_attn.
+- **RoPE**: Uses `candle_nn::rotary_emb::rope_i()` with explicit F32 cast before applying, then cast back.
+- **RMSNorm**: Uses `candle_nn::ops::rms_norm()` with `alpha` parameter.
+- **LayerScale**: Has a `LayerScale` struct with learnable per-channel scaling.
+- **KV Cache**: Uses pre-allocated `ScatteredKvCache` with scatter-write, unlike our `Tensor::cat` approach.
+
+The Moshi reference uses manual attention like our code, not SDPA. This validates our approach but doesn't help close the gap to Python's SDPA.
+
+### 10. Candle Precision Issues (FROM GitHub)
+
+From Candle issue #3032:
+- MSE between Candle and PyTorch matmul: ~4e-10 (MAE ~1.5e-5)
+- Maintainer Robert Knight: "floating point addition and multiplication are not associative. There will be very small differences depending on the order in which calculations are done."
+- Issue closed as "expected behavior"
+
+From Candle issue #2031:
+- Candle vs PyTorch diverge on token generation even with greedy decoding
+- Maintainer Laurent Mazare: "we accumulate with f32 in the softmax whereas pytorch may well do something slightly different"
+- Divergence is expected and considered inherent to framework differences
+
+**Key insight:** No public report exists of anyone achieving >0.9 correlation between a Candle port and PyTorch for an autoregressive transformer. Our 0.839 may already be near the practical ceiling for this framework combination.
 
 ---
 
@@ -133,97 +183,161 @@ The Python Pocket TTS code uses PyTorch's fused SDPA kernel, which has its own n
 
 ### High Confidence
 
-**1. Switch to `candle_nn::ops::softmax_last_dim()` for attention**
-- **Why**: Matches Kyutai's Moshi Rust implementation. Uses optimized backend-specific kernels. The generic `softmax()` uses different operation ordering that may accumulate differently.
-- **How**: Replace `candle_nn::ops::softmax(&attn_weights, candle_core::D::Minus1)` with `candle_nn::ops::softmax_last_dim(&attn_weights)` in `src/modules/attention.rs` (both `MultiHeadAttention` and `FusedMultiHeadAttention`).
-- **Expected impact**: Small per-operation improvement, but compounds over 6 layers x N steps.
-
-**2. Use Candle's built-in `rope_i()` instead of custom RoPE**
-- **Why**: Kyutai's Moshi Rust uses `candle_nn::rotary_emb::rope_i()`. It processes data in `(B, H, T, D)` layout using a tight loop over pairs, while our custom implementation uses reshape/narrow/cat operations that produce different float accumulation.
-- **How**: After transposing Q, K to `(B, H, T, D)`, call `candle_nn::rotary_emb::rope_i()` with precomputed cos/sin tensors. Ensure cos/sin have shape `(1, 1, T, D/2)` matching what `rope_i` expects.
-- **Expected impact**: Could be significant. RoPE errors feed into every subsequent attention computation.
-
-**3. Layer-by-layer intermediate tensor comparison**
-- **Why**: The current approach compares only final waveforms. We need to find exactly WHERE divergence starts.
+**1. Step-0 Per-Layer Intermediate Tensor Dump (DIAGNOSTIC)**
+- **Why**: This is the single most impactful thing to do next. Instead of guessing, measure exactly where divergence starts.
 - **How**:
-  1. Add a Python script that runs the model and dumps tensors after every transformer layer, after RoPE, after softmax, etc. (extend `validation/dump_intermediates.py`)
-  2. Load these tensors in Rust and compare at each stage
-  3. Find the first operation where correlation drops below 0.99
-- **Expected impact**: Directly identifies the root cause operation.
+  1. In Python, add hooks to capture tensors after norm1, after attention, after norm2, after MLP, after final_norm for step 0 of autoregressive generation. Save as .npy files.
+  2. In Rust, dump the same tensors at the same points for step 0.
+  3. Compare per-element: compute correlation and max absolute difference at each stage.
+  4. Find the FIRST operation where correlation drops below 0.999.
+- **Expected outcome**: Identifies whether divergence starts in attention (SDPA vs manual) or elsewhere.
+- **Effort**: Medium (a few hours to add capture hooks in both Python and Rust)
 
-**4. Compute RoPE frequencies on-the-fly like Python (not precomputed cache)**
-- **Why**: Python computes `freqs = exp(ds * (-log(max_period) * 2 / D))` and `cos(freqs * ts)` at each call. Our Rust code precomputes frequencies via `positions.matmul(&inv_freq)`. The matmul-based computation has different float accumulation order than element-wise multiplication.
-- **How**: Change `RotaryEmbedding` to compute cos/sin on-the-fly using element-wise operations matching Python exactly: `cos_val = cos(inv_freq[i] * position)` for each element.
-- **Expected impact**: Eliminates RoPE as a precision variable.
+**2. Match Python's On-the-fly RoPE Frequency Computation**
+- **Why**: Eliminate RoPE frequencies as a precision variable. Even tiny frequency differences (1e-7) get multiplied by large position offsets (125+) and compound through cos/sin.
+- **How**: Replace `RotaryEmbedding::compute_inv_freq` and `compute_cache` to exactly mirror Python's computation:
+  ```rust
+  // Instead of precomputing via matmul, compute element-wise per position:
+  let ds: Vec<f32> = (0..half_dim).map(|i| i as f32).collect();
+  let freqs: Vec<f32> = ds.iter()
+      .map(|d| f32::exp(d * (-f32::ln(base) * 2.0 / dim as f32)))
+      .collect();
+  // Then for each position t:
+  // cos_val[t][d] = cos(freqs[d] * (t + offset))
+  // sin_val[t][d] = sin(freqs[d] * (t + offset))
+  ```
+- **Key difference**: Python uses `exp(d * C)` while Rust uses `1.0 / base.powf(2*d/D)`. These are algebraically identical but `exp` and `powf` use different numerical codepaths. Also, Python computes `freqs * ts` element-wise while Rust uses a matmul for the outer product.
+- **Expected impact**: Small per-element (~1e-7) but matters at high positions.
+- **Effort**: Low (rewrite ~20 lines in rotary.rs)
+
+**3. f64 Validation Pass to Triage Logic Bug vs Precision**
+- **Why**: If running both Python and Rust in f64 produces correlation ~1.0, the entire gap is float32 accumulation. If it still diverges, there is a logic bug.
+- **How**:
+  1. In Python: Cast model to `.double()`, cast all inputs to float64, run generation.
+  2. In Rust: Change all `DType::F32` to `DType::F64`, load weights as f64, run generation.
+  3. Compare f64 outputs.
+- **Expected impact**: Definitive answer on whether ~0.84 is the float32 ceiling or if there's a bug.
+- **Effort**: Medium-High (requires modifying both Python and Rust pipelines)
+- **Risk**: Some PyTorch operations may not support f64 on all codepaths.
 
 ### Worth Trying
 
-**5. Remove all debug logging from attention.rs and flowlm.rs**
-- **Why**: The extensive debug logging with `AtomicUsize` counters and conditional tensor reads adds overhead and could affect tensor evaluation ordering in Candle's lazy evaluation model. Debug code should not be in production paths.
-- **How**: Remove or gate behind a compile-time feature flag.
+**4. Capture and Compare Attention Weights at Step 0**
+- **Why**: SDPA vs manual attention is the biggest suspected source of divergence. Comparing the attention weight matrices (post-softmax) between Python and Rust would quantify this directly.
+- **How**:
+  1. In Python, temporarily replace `F.scaled_dot_product_attention` with manual attention to get the attention weights matrix.
+  2. Compare these weights to what Rust computes.
+  3. Also compare the SDPA output to the manual attention output in Python alone -- this quantifies the SDPA vs manual gap.
+- **Expected impact**: Directly measures the SDPA effect.
+- **Effort**: Medium
 
-**6. Match Python's KV cache pattern (pre-allocated scatter)**
-- **Why**: `Tensor::cat` creates new tensors each step, potentially with different memory alignment. Scatter-based cache modifies in place.
-- **How**: Pre-allocate KV cache to max_seq_len and scatter-write new values.
-- **Expected impact**: Likely minimal for correctness, but better for performance.
+**5. Replace Rust Manual Attention with Candle's SDPA (if available)**
+- **Why**: If Candle has an SDPA implementation or if one can be added, it would reduce the divergence from Python.
+- **How**: Check if `candle-flash-attn` or `candle-nn` has an SDPA function. If not, implement a tighter fused attention loop in Rust that matches SDPA's computation order.
+- **Expected impact**: Could be significant if SDPA accounts for a large portion of the divergence.
+- **Effort**: High
 
-**7. Convert Q/K to F32 before RoPE (like Moshi)**
-- **Why**: Kyutai's code explicitly converts to F32 before RoPE application: `qk.to_dtype(DType::F32)`. If the model weights are already F32, this is a no-op, but it ensures consistency.
-- **How**: Add `.to_dtype(DType::F32)?` before RoPE, `.to_dtype(original_dtype)?` after.
+**6. Remove Debug Logging from Hot Path**
+- **Why**: The `attention.rs` and `flowlm.rs` files contain extensive debug logging with `AtomicUsize` counters, tensor reads (`.to_vec1::<f32>()`), and conditional eprintln. These force Candle to materialize tensors that might otherwise be lazily evaluated, potentially affecting computation order and performance.
+- **How**: Gate all debug logging behind `#[cfg(feature = "debug_tensors")]` or remove entirely.
+- **Expected impact**: Likely zero for correctness, but improves performance and code clarity.
+- **Effort**: Low
 
 ### Speculative
 
-**8. Use ONNX export path for bit-exact matching**
-- **Why**: ONNX runtimes can reproduce PyTorch results exactly. Export the Python model to ONNX, run in onnxruntime-rs, compare outputs to isolate whether the issue is in our transformer logic or in Candle's numerics.
-- **How**: Use `torch.onnx.export()` on the Python model, load with `ort` crate in Rust.
+**7. Implement Two-Pass Attention: Compute in f64, Store in f32**
+- **Why**: If the f64 validation pass (approach #3) shows correlation ~1.0, the gap is purely precision. Selectively computing attention in f64 (just the softmax and/or the Q@K^T matmul) while keeping everything else in f32 might close the gap without the full f64 overhead.
+- **How**: Cast Q, K to f64 for the matmul, compute softmax in f64, cast result back to f32 before matmul with V.
+- **Expected impact**: Unknown -- depends on whether softmax precision is the bottleneck.
+- **Effort**: Low
 
-**9. Double-precision (f64) validation pass**
-- **Why**: Running both Python (with `.double()`) and Rust (with `DType::F64`) in f64 would show if the divergence is a precision issue or a logic bug. If f64 gives correlation ~1.0, the issue is purely float32 accumulation. If f64 still diverges, there is a logic bug.
-- **How**: Temporarily cast all model weights and computations to f64 in both Python and Rust.
+**8. Pre-compute Python Attention Outputs for Validation**
+- **Why**: Instead of trying to match SDPA exactly, capture the Python transformer's output at each autoregressive step and inject it into Rust as "ground truth conditioning" for FlowNet. This isolates FlowNet divergence from transformer divergence.
+- **How**: Dump Python `out_norm` output at every step. In Rust, load these instead of computing through the transformer. Compare FlowNet output.
+- **Expected impact**: Definitively separates transformer vs FlowNet contribution to the gap.
+- **Effort**: Medium
 
 ---
 
 ## Already Tried (Don't Repeat)
 
-From PORTING_STATUS.md, these have been fixed and verified:
-1. RoPE interleaved vs split halves - FIXED
-2. RoPE applied before vs after transpose - FIXED
-3. LayerNorm vs RMSNorm for out_norm - FIXED
-4. FlowNet sinusoidal order, activation, AdaLN chunk order, SiLU placement - ALL FIXED
-5. LSD time progression (two time values) - FIXED
-6. SEANet activation (ELU not GELU) - FIXED
-7. Voice conditioning concatenation order (voice first, then text) - FIXED
-8. Two-phase forward pass (voice phase, text phase, generation) - FIXED
-9. FinalLayer missing norm_final - FIXED
-10. SEANet output tanh removal - FIXED
-11. FlowNet TimeEmbedding RMSNorm (proper variance normalization) - FIXED
-12. FlowNet time embedding addition (only to conditioning) - FIXED
-13. Latent denormalization (only before Mimi, not in loop) - FIXED
-14. Weight loading - VERIFIED CORRECT
+From `docs/audit/approaches-tried.md`:
+
+1. **Noise tensor off-by-one fix** (2026-03-18) -- MASSIVE IMPROVEMENT (0 -> 0.839). APPLIED.
+2. **Switch to `softmax_last_dim()`** (2026-03-17) -- ZERO impact. APPLIED.
+3. **Switch to `rope_i()` from candle_nn** (2026-03-17) -- ZERO impact. APPLIED.
+4. **Layer-by-layer transformer comparison** (2026-03-17) -- DIAGNOSTIC only, led to noise offset discovery.
+
+From KNOWLEDGE_INDEX.md, these are all FIXED and verified:
+- RoPE interleaved vs split halves
+- RoPE before vs after transpose
+- LayerNorm vs RMSNorm for out_norm
+- FlowNet sinusoidal order, activation, AdaLN chunk order, SiLU placement
+- LSD time progression (two time values)
+- SEANet activation (ELU not GELU)
+- Voice conditioning concatenation order
+- Two-phase forward pass
+- FinalLayer missing norm_final
+- SEANet output tanh removal
+- FlowNet TimeEmbedding RMSNorm
+- FlowNet time embedding addition
+- Latent denormalization
+- Weight loading -- VERIFIED CORRECT
+
+---
+
+## Specific Questions to Investigate
+
+1. **What is the MAE between Python's `F.scaled_dot_product_attention` output and manual attention (Q@K^T*scale+mask -> softmax -> @V) when run on the SAME inputs in Python?** This quantifies the SDPA vs manual attention divergence ceiling.
+
+2. **Does the precomputed cos/sin cache in Rust exactly match Python's on-the-fly computation for positions 0-200?** Dump and compare.
+
+3. **Is there an off-by-one in the causal mask?** Python: `shift = num_keys - num_queries` (overrides the passed shift argument). Rust: `if j <= i + (kv_len - q_len)`. Verify these produce identical masks for the specific (q_len, kv_len) values used during generation.
+
+4. **Does `Tensor::cat` for KV cache produce bit-identical results to Python's scatter-based cache?** Dump K/V from cache at step 0 and compare.
+
+5. **At step 0, does `input_linear(bos_emb)` match between Python and Rust?** This should be exact since both use the same weights and same input. If it diverges, there's a weight loading issue.
+
+6. **How does Python handle the NaN -> bos_emb replacement?** Python: `sequence = torch.where(torch.isnan(sequence), self.bos_emb, sequence)`. Rust: starts with `bos_emb.unsqueeze(0).unsqueeze(0)`. These should be equivalent but verify the tensor values match.
 
 ---
 
 ## Useful Links & References
 
-- Kyutai Moshi Rust source: https://github.com/kyutai-labs/moshi/tree/main/rust/moshi-core/src
-  - `transformer.rs` - Reference transformer with `rope_i()` and `softmax_last_dim()`
-  - `kv_cache.rs` - ScatteredKvCache implementation
-  - `nn.rs` - Quantization wrappers and `matmul_dtype()` helper
-- Candle precision issue #3032: https://github.com/huggingface/candle/issues/3032
-- Candle divergence issue #2031: https://github.com/huggingface/candle/issues/2031
-- Candle `softmax` vs `softmax_last_dim`: https://github.com/huggingface/candle/blob/main/candle-nn/src/ops.rs
-- Candle `rope` vs `rope_i`: https://github.com/huggingface/candle/blob/main/candle-nn/src/rotary_emb.rs
-- Kyutai Pocket TTS official: https://github.com/kyutai-labs/pocket-tts
+- [Kyutai Moshi Rust transformer source](https://github.com/kyutai-labs/moshi/blob/main/rust/moshi-core/src/transformer.rs) - Reference attention implementation with `rope_i()`, `softmax_last_dim()`, `matmul_dtype()`
+- [Candle precision issue #3032](https://github.com/huggingface/candle/issues/3032) - MSE ~4e-10 per matmul, MAE ~1.5e-5
+- [Candle divergence issue #2031](https://github.com/huggingface/candle/issues/2031) - Expected divergence in autoregressive generation
+- [PyTorch SDPA documentation](https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html) - Math backend keeps all intermediates in input dtype
+- [PyTorch SDPA different output issue #119188](https://github.com/pytorch/pytorch/issues/119188) - Different output between reference and fused implementations
+- [Candle porting tutorial](https://github.com/ToluClassics/candle-tutorial) - Recommended verification techniques
+- [Kyutai Pocket TTS official](https://github.com/kyutai-labs/pocket-tts) - Python source for `modules/transformer.py`, `modules/rope.py`, `modules/mlp.py`
+- [PyTorch numerical accuracy notes](https://docs.pytorch.org/docs/stable/notes/numerical_accuracy.html)
 
 ---
 
 ## Priority Action Plan
 
-| Priority | Action | Expected Impact | Effort |
-|----------|--------|-----------------|--------|
-| 1 | Layer-by-layer intermediate comparison | Identifies root cause | Medium |
-| 2 | Switch to `softmax_last_dim()` | Matches Moshi reference | Low |
-| 3 | Switch to `rope_i()` from candle_nn | Matches Moshi reference | Medium |
-| 4 | Compute RoPE frequencies on-the-fly | Eliminates freq precision gap | Low |
-| 5 | f64 validation pass | Logic bug vs precision triage | Medium |
-| 6 | Remove debug logging | Clean code, no eval interference | Low |
+| Priority | Action | Expected Impact | Effort | Confidence |
+|----------|--------|-----------------|--------|------------|
+| 1 | Step-0 per-layer intermediate dump | Identifies root cause | Medium | Very High |
+| 2 | Match Python RoPE frequency computation | Eliminates freq precision gap | Low | Medium |
+| 3 | f64 validation pass | Logic bug vs precision triage | Medium-High | Very High |
+| 4 | Compare SDPA vs manual attention in Python | Quantifies SDPA ceiling | Medium | High |
+| 5 | Remove debug logging from hot path | Clean code | Low | Low |
+| 6 | Higher-precision attention (f64 softmax) | Close precision gap | Low | Low-Medium |
+
+---
+
+## Summary of Status
+
+The 0.839 correlation is a strong result that may be approaching the practical ceiling for Candle-vs-PyTorch autoregressive transformers. The key unknown is whether the remaining 16% gap is:
+
+**(a) Inherent framework precision** -- float32 accumulation differences between Candle and PyTorch, compounded across 6 layers x ~45 autoregressive steps. This would be validated by the f64 experiment (approach #3). If f64 gives ~1.0, the gap is purely precision and may be unclosable without selective f64 computation.
+
+**(b) A specific implementation difference** -- such as SDPA vs manual attention, RoPE frequency precision, or LayerNorm computation order. This would be identified by the step-0 intermediate dump (approach #1).
+
+**(c) A combination** -- some small logic difference that's amplified by precision accumulation.
+
+The recommended next step is approach #1 (step-0 intermediate dump) because it answers whether there's a single big divergence source or a distributed precision issue. This determines whether approaches #2-#6 are worth pursuing.
+
+*Previous report archived as research-advisor-report-2.md*

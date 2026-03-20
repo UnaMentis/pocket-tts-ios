@@ -4,7 +4,32 @@
 
 Porting Kyutai Pocket TTS (~117M parameter on-device TTS model) from Python to Rust/Candle for iOS deployment.
 
-**Current Status**: ✅ **PRODUCTION READY**
+**Current Status**: ✅ Production ready. Correlation optimization in progress.
+
+**Primary Metric**: End-to-end waveform correlation = **0.839** (noise-matched, phrase_00). Target: >0.95.
+
+---
+
+## Latest: Noise Off-by-One Fix (2026-03-18)
+
+### Discovery
+Python's `generate_audio()` makes a text-prompting FlowNet call before autoregressive generation begins. This call generates noise captured as `noise_step_000.npy` but **discards the FlowNet output**. Autoregressive step 0 (BOS) uses `noise_step_001.npy`. Rust was using `noise_step_000` for step 0 — the wrong noise tensor at every step.
+
+### Fix
+Changed `noise_tensors[step]` → `noise_tensors[step + 1]` in flowlm.rs (both sync and streaming paths).
+
+### Results
+- End-to-end correlation: **~0 → 0.839** (massive improvement)
+- Per-frame: median 0.76, max 0.98, 10/45 frames > 0.9
+- Frames 0-1 still weak (~0.18, -0.09) — early conditioning divergence
+- Frames 3+ recover well (0.88-0.98)
+
+### Also tried (zero impact)
+- `softmax_last_dim()` in attention.rs — bit-identical output
+- `rope_i()` from candle_nn in rotary.rs — bit-identical output
+
+### Remaining gap (~16%)
+Transformer hidden states still differ slightly between Python and Rust, causing FlowNet to get different conditioning. See `docs/audit/approaches-tried.md` for full log.
 
 ---
 

@@ -189,6 +189,7 @@ fn main() {
     let mut speed: Option<f32> = None;
     let mut seed: Option<u32> = None;
     let mut noise_dir: Option<PathBuf> = None;
+    let mut noise_phrase_id: String = "phrase_00".to_string();
 
     let mut i = 1;
     while i < args.len() {
@@ -283,6 +284,12 @@ fn main() {
                     i += 1;
                 }
             },
+            "--noise-phrase-id" => {
+                if i + 1 < args.len() {
+                    noise_phrase_id = args[i + 1].clone();
+                    i += 1;
+                }
+            },
             "--help" | "-h" => {
                 print_usage();
                 return;
@@ -337,6 +344,7 @@ fn main() {
             export_latents_path.as_ref().map(|v| &**v),
             &tts_config,
             noise_dir.as_deref(),
+            &noise_phrase_id,
         );
     }
 }
@@ -487,6 +495,7 @@ fn run_single_phrase(
     export_latents_path: Option<&Path>,
     config: &TTSConfig,
     noise_dir: Option<&Path>,
+    noise_phrase_id: &str,
 ) {
     println!("Configuration:");
     println!("  Model directory: {}", model_dir.display());
@@ -515,8 +524,7 @@ fn run_single_phrase(
 
     // Load noise tensors if provided (for correlation testing)
     if let Some(nd) = noise_dir {
-        // Default to phrase_00 — for multi-phrase, use validation mode
-        match model.load_noise_tensors(nd, "phrase_00") {
+        match model.load_noise_tensors(nd, noise_phrase_id) {
             Ok(count) => println!("  Loaded {} noise tensors for correlation testing", count),
             Err(e) => eprintln!("WARNING: Failed to load noise tensors: {:?}", e),
         }

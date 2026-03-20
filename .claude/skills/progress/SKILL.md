@@ -30,6 +30,7 @@ You are a **Progress Tracker** for the Pocket TTS Rust port. Your job is to aggr
 - Read `docs/audit/verification-report-2.md` — previous metrics for trend
 - Read `docs/audit/research-advisor-report-1.md` — current research focus
 - Read `docs/audit/cleanup-audit-report-1.md` — technical debt status
+- Read `docs/audit/approaches-tried.md` — structured log of optimization attempts and results
 - Read `autotuning/REPORT.md` — autotuning findings
 
 ### 3. Check Git Activity
@@ -76,8 +77,9 @@ git log --since="2 weeks ago" --name-only --pretty=format: | sort | uniq -c | so
 | Jan 2026 | Initial attempt | 0.0016 | - |
 | Jan 2026 | After 14 fixes | ~0.16 (e2e) | +0.16 |
 | Jan 24 | v0.4.0 Beta | ~0.16 (e2e), 0.74 (Mimi) | - |
-| Jan 27 | v0.4.1 noise enabled | ~0 | regression |
+| Jan 27 | v0.4.1 noise enabled | ~0 | regression (RNG mismatch) |
 | Mar 13 | Noise capture built | ~0 (e2e), 0.72 (frame 0) | infrastructure |
+| Mar 18 | Noise off-by-one fix | **0.839** (e2e, noise-matched) | +0.84 (!!!) |
 | [today] | Current | x.xxxx | +/-x.xxxx |
 
 ---
@@ -87,10 +89,11 @@ git log --since="2 weeks ago" --name-only --pretty=format: | sort | uniq -c | so
 | Component | Status | Fidelity | Notes |
 |-----------|--------|----------|-------|
 | Tokenizer | Complete | Matches Python | |
-| FlowLM Transformer | Working | Frame 0 corr: 0.72 | Bottleneck |
-| FlowNet | Working | Noise-matched tested | |
-| Mimi Decoder | Working | ~0.74 correlation | |
-| Noise Capture | Complete | 147 tensors captured | |
+| FlowLM Transformer | Working | Hidden states diverge slightly | Remaining bottleneck |
+| FlowNet | Working | Noise-matched, offset-corrected | |
+| Mimi Decoder | Working | ~0.74 correlation (standalone) | |
+| Noise Capture | Complete | 147 tensors, off-by-one fixed | |
+| E2E Correlation | **0.839** | Noise-matched, phrase_00 | |
 | Composite Scoring | Complete | 5-metric weighted | |
 | iOS Integration | Complete | XCFramework builds | |
 

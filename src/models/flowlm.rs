@@ -474,47 +474,46 @@ impl FlowLM {
             // Run through transformer (using KV cache)
             let mut step_hidden = latent_hidden.clone();
 
-            // DIAGNOSTIC: Capture INPUT to layer 0 at step 36
-            if step == 36 {
+            // DIAGNOSTIC: Capture INPUT to layer 0 at step 0 and step 36
+            if step == 0 || step == 36 {
                 let h_flat: Vec<f32> = step_hidden.flatten_all()?.to_vec1()?;
                 let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
                 let h_std = (h_flat.iter().map(|x| (x - h_mean).powi(2)).sum::<f32>() / h_flat.len() as f32).sqrt();
-                eprintln!("[INPUT-L0] Rust step=36: mean={:.6}, std={:.6}", h_mean, h_std);
-                eprintln!("[INPUT-L0] Rust step=36: first 8: {:?}", &h_flat[..8.min(h_flat.len())]);
+                eprintln!("[INPUT-L0] Rust step={}: mean={:.6}, std={:.6}", step, h_mean, h_std);
+                eprintln!("[INPUT-L0] Rust step={}: first 8: {:?}", step, &h_flat[..8.min(h_flat.len())]);
             }
 
             for (i, layer) in self.layers.iter().enumerate() {
                 step_hidden = layer.forward(&step_hidden, &self.rotary, Some(&mut self.kv_caches[i]))?;
 
-                // DIAGNOSTIC: Per-layer hidden state capture at step 36 (Python step 38)
-                // This is the critical step where divergence begins
-                if step == 36 {
+                // DIAGNOSTIC: Per-layer hidden state capture at step 0 and step 36
+                if step == 0 || step == 36 {
                     let h_flat: Vec<f32> = step_hidden.flatten_all()?.to_vec1()?;
                     let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
                     let h_std = (h_flat.iter().map(|x| (x - h_mean).powi(2)).sum::<f32>() / h_flat.len() as f32).sqrt();
                     let h_min = h_flat.iter().cloned().fold(f32::INFINITY, f32::min);
                     let h_max = h_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
                     eprintln!(
-                        "[LAYER-{}] Rust step=36: mean={:.6}, std={:.6}, min={:.6}, max={:.6}",
-                        i, h_mean, h_std, h_min, h_max
+                        "[LAYER-{}] Rust step={}: mean={:.6}, std={:.6}, min={:.6}, max={:.6}",
+                        i, step, h_mean, h_std, h_min, h_max
                     );
-                    eprintln!("[LAYER-{}] Rust step=36: first 8: {:?}", i, &h_flat[..8.min(h_flat.len())]);
+                    eprintln!("[LAYER-{}] Rust step={}: first 8: {:?}", i, step, &h_flat[..8.min(h_flat.len())]);
                 }
             }
             let step_hidden = self.final_norm.forward(&step_hidden)?;
 
-            // DIAGNOSTIC: Final hidden state at step 36 (after out_norm)
-            if step == 36 {
+            // DIAGNOSTIC: Final hidden state at step 0 and step 36 (after out_norm)
+            if step == 0 || step == 36 {
                 let h_flat: Vec<f32> = step_hidden.flatten_all()?.to_vec1()?;
                 let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
                 let h_std = (h_flat.iter().map(|x| (x - h_mean).powi(2)).sum::<f32>() / h_flat.len() as f32).sqrt();
                 let h_min = h_flat.iter().cloned().fold(f32::INFINITY, f32::min);
                 let h_max = h_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
                 eprintln!(
-                    "[FINAL] Rust step=36: mean={:.6}, std={:.6}, min={:.6}, max={:.6}",
-                    h_mean, h_std, h_min, h_max
+                    "[FINAL] Rust step={}: mean={:.6}, std={:.6}, min={:.6}, max={:.6}",
+                    step, h_mean, h_std, h_min, h_max
                 );
-                eprintln!("[FINAL] Rust step=36: first 8: {:?}", &h_flat[..8.min(h_flat.len())]);
+                eprintln!("[FINAL] Rust step={}: first 8: {:?}", step, &h_flat[..8.min(h_flat.len())]);
             }
 
             // Get the last position's hidden state
@@ -581,8 +580,11 @@ impl FlowLM {
             let cond = last_hidden.unsqueeze(1)?; // [1, 1, 1024]
                                                   // Derive per-step seed for different-but-deterministic noise at each step
             let step_seed = seed.map(|s| s.wrapping_add(step as u64));
-            // Use pre-captured noise tensor if available for this step
-            let noise_override = noise_tensors.and_then(|nt| nt.get(step));
+            // Use pre-captured noise tensor if available for this step.
+            // Offset by 1 because noise_step_000 corresponds to Python's text prompting
+            // FlowNet call (whose output is discarded). Rust doesn't make that call,
+            // so generation step 0 should use noise_step_001, step 1 uses noise_step_002, etc.
+            let noise_override = noise_tensors.and_then(|nt| nt.get(step + 1));
             let next_normalized =
                 self.flow_net
                     .generate(&cond, num_flow_steps, temperature, &self.device, step_seed, noise_override)?;
@@ -718,8 +720,9 @@ impl FlowLM {
             let cond = last_hidden.unsqueeze(1)?;
             // Derive per-step seed for different-but-deterministic noise at each step
             let step_seed = seed.map(|s| s.wrapping_add(step as u64));
-            // Use pre-captured noise tensor if available for this step
-            let noise_override = noise_tensors.and_then(|nt| nt.get(step));
+            // Use pre-captured noise tensor if available for this step.
+            // Offset by 1: noise_step_000 is Python's text prompting noise (discarded).
+            let noise_override = noise_tensors.and_then(|nt| nt.get(step + 1));
             let next_normalized =
                 self.flow_net
                     .generate(&cond, num_flow_steps, temperature, &self.device, step_seed, noise_override)?;
