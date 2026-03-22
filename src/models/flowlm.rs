@@ -497,7 +497,12 @@ impl FlowLM {
                         "[LAYER-{}] Rust step={}: mean={:.6}, std={:.6}, min={:.6}, max={:.6}",
                         i, step, h_mean, h_std, h_min, h_max
                     );
-                    eprintln!("[LAYER-{}] Rust step={}: first 8: {:?}", i, step, &h_flat[..8.min(h_flat.len())]);
+                    eprintln!(
+                        "[LAYER-{}] Rust step={}: first 8: {:?}",
+                        i,
+                        step,
+                        &h_flat[..8.min(h_flat.len())]
+                    );
                 }
             }
             let step_hidden = self.final_norm.forward(&step_hidden)?;
