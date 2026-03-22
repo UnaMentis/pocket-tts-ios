@@ -10,6 +10,7 @@
 
 use candle_core::{Device, Result, Tensor};
 use candle_nn::{Module, VarBuilder};
+use std::path::Path;
 
 use crate::modules::{
     attention::{FusedMultiHeadAttention, KVCache},
@@ -19,6 +20,47 @@ use crate::modules::{
     mlp::SimpleMLP,
     rotary::RotaryEmbedding,
 };
+
+/// Write a 1-D f32 tensor to a .npy file for cross-implementation comparison.
+fn dump_npy(dir: &Path, name: &str, tensor: &Tensor) -> Result<()> {
+    use std::io::Write;
+    let flat: Vec<f32> = tensor.flatten_all()?.to_vec1()?;
+    let shape_str = format!("({},)", flat.len());
+    // Minimal NumPy .npy v1.0 header
+    let header = format!("{{'descr': '<f4', 'fortran_order': False, 'shape': {}, }}", shape_str);
+    // Pad header to align total (magic 6 + ver 2 + hdr_len 2 + header) to 64 bytes
+    let prefix_len = 10; // 6 magic + 2 version + 2 header_len
+    let pad = 64 - ((prefix_len + header.len() + 1) % 64); // +1 for \n
+    let padded_header = format!("{}{}\n", header, " ".repeat(pad));
+    let hdr_len = padded_header.len() as u16;
+
+    let path = dir.join(format!("{}.npy", name));
+    let mut f = std::fs::File::create(&path).map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+    // Magic + version
+    f.write_all(&[0x93, b'N', b'U', b'M', b'P', b'Y', 1, 0])
+        .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+    f.write_all(&hdr_len.to_le_bytes())
+        .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+    f.write_all(padded_header.as_bytes())
+        .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+    // Raw f32 data in little-endian
+    let bytes: Vec<u8> = flat.iter().flat_map(|v| v.to_le_bytes()).collect();
+    f.write_all(&bytes).map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+    let mean: f32 = flat.iter().sum::<f32>() / flat.len() as f32;
+    let std = (flat.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / flat.len() as f32).sqrt();
+    eprintln!(
+        "  {}: shape=({},) mean={:.6} std={:.6} first4=[{:.6},{:.6},{:.6},{:.6}]",
+        name,
+        flat.len(),
+        mean,
+        std,
+        flat[0],
+        flat[1],
+        flat[2],
+        flat[3]
+    );
+    Ok(())
+}
 
 /// Control flow for streaming latent generation
 ///
@@ -95,95 +137,52 @@ impl TransformerLayer {
         })
     }
 
-    fn forward(&self, x: &Tensor, rotary: &RotaryEmbedding, kv_cache: Option<&mut KVCache>) -> Result<Tensor> {
+    /// Run one transformer layer.
+    /// If `dump` is Some((dir, layer_idx)), save intermediate tensors as .npy files.
+    fn forward(
+        &self,
+        x: &Tensor,
+        rotary: &RotaryEmbedding,
+        kv_cache: Option<&mut KVCache>,
+        dump: Option<(&Path, usize)>,
+    ) -> Result<Tensor> {
         // Pre-norm attention (Kyutai Pocket architecture)
         let residual = x;
-        let normed = self.norm1.forward(x)?;
 
-        // DEBUG: Log norm1 output for text and step 0
-        // Counter: 0-5 = voice layers, 6-11 = text layers, 12-17 = step 0 layers
-        static DEBUG_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let call_num = DEBUG_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        // Layer 0 text processing is call 6
-        let is_text_layer0 = call_num == 6;
-        // Layer 0 step 0 (first latent generation) is call 12
-        let is_step0_layer0 = call_num == 12;
-
-        if is_text_layer0 {
-            if let Ok(n) = normed.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
-                eprintln!("[Layer0-Text] norm1 first 8: {:?}", &n[..8.min(n.len())]);
-                let mean: f32 = n.iter().sum::<f32>() / n.len() as f32;
-                let std = (n.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / n.len() as f32).sqrt();
-                eprintln!("[Layer0-Text] norm1 mean: {:.6}, std: {:.6}", mean, std);
-            }
+        if let Some((dir, li)) = dump {
+            dump_npy(dir, &format!("layer{}_input", li), &x.flatten_all()?)?;
         }
-        if is_step0_layer0 {
-            if let Ok(n) = normed.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
-                eprintln!("[Layer0-Step0] norm1 first 8: {:?}", &n[..8.min(n.len())]);
-                let mean: f32 = n.iter().sum::<f32>() / n.len() as f32;
-                let std = (n.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / n.len() as f32).sqrt();
-                eprintln!("[Layer0-Step0] norm1 mean: {:.6}, std: {:.6}", mean, std);
-            }
+
+        let normed = self.norm1.forward(x)?;
+        if let Some((dir, li)) = dump {
+            dump_npy(dir, &format!("layer{}_norm1", li), &normed.flatten_all()?)?;
         }
 
         let attn_out = self.attn.forward(&normed, Some(rotary), kv_cache, true)?;
-        let x = (residual + &attn_out)?;
-
-        // DEBUG: Log after first residual add
-        if is_text_layer0 {
-            if let Ok(vals) = x.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
-                eprintln!("[Layer0-Text] after attn+residual first 8: {:?}", &vals[..8.min(vals.len())]);
-            }
+        if let Some((dir, li)) = dump {
+            dump_npy(dir, &format!("layer{}_attn", li), &attn_out.flatten_all()?)?;
         }
-        if is_step0_layer0 {
-            if let Ok(vals) = x.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
-                eprintln!("[Layer0-Step0] after attn+residual first 8: {:?}", &vals[..8.min(vals.len())]);
-            }
+
+        let x = (residual + &attn_out)?;
+        if let Some((dir, li)) = dump {
+            dump_npy(dir, &format!("layer{}_post_attn", li), &x.flatten_all()?)?;
         }
 
         // Pre-norm MLP
         let residual = &x;
-        let x = self.norm2.forward(&x)?;
-
-        // DEBUG: Log after norm2
-        if is_text_layer0 {
-            if let Ok(vals) = x.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
-                eprintln!("[Layer0-Text] after norm2 first 8: {:?}", &vals[..8.min(vals.len())]);
-            }
-        }
-        if is_step0_layer0 {
-            if let Ok(vals) = x.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
-                eprintln!("[Layer0-Step0] after norm2 first 8: {:?}", &vals[..8.min(vals.len())]);
-            }
+        let normed2 = self.norm2.forward(&x)?;
+        if let Some((dir, li)) = dump {
+            dump_npy(dir, &format!("layer{}_norm2", li), &normed2.flatten_all()?)?;
         }
 
-        let x = self.mlp.forward(&x)?;
-
-        // DEBUG: Log after MLP
-        if is_text_layer0 {
-            if let Ok(vals) = x.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
-                eprintln!("[Layer0-Text] after MLP first 8: {:?}", &vals[..8.min(vals.len())]);
-            }
-        }
-        if is_step0_layer0 {
-            if let Ok(vals) = x.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
-                eprintln!("[Layer0-Step0] after MLP first 8: {:?}", &vals[..8.min(vals.len())]);
-            }
+        let mlp_out = self.mlp.forward(&normed2)?;
+        if let Some((dir, li)) = dump {
+            dump_npy(dir, &format!("layer{}_mlp", li), &mlp_out.flatten_all()?)?;
         }
 
-        let output = (residual + x)?;
-
-        // DEBUG: Log final layer output
-        if is_text_layer0 {
-            if let Ok(vals) = output.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
-                eprintln!("[Layer0-Text] LAYER OUTPUT first 8: {:?}", &vals[..8.min(vals.len())]);
-            }
-        }
-        if is_step0_layer0 {
-            if let Ok(vals) = output.narrow(1, 0, 1)?.flatten_all()?.to_vec1::<f32>() {
-                eprintln!("[Layer0-Step0] LAYER OUTPUT first 8: {:?}", &vals[..8.min(vals.len())]);
-            }
+        let output = (residual + mlp_out)?;
+        if let Some((dir, li)) = dump {
+            dump_npy(dir, &format!("layer{}_output", li), &output.flatten_all()?)?;
         }
 
         Ok(output)
@@ -312,7 +311,7 @@ impl FlowLM {
         // Pass through transformer layers
         for (i, layer) in self.layers.iter().enumerate() {
             let cache = if use_cache { Some(&mut self.kv_caches[i]) } else { None };
-            hidden = layer.forward(&hidden, &self.rotary, cache)?;
+            hidden = layer.forward(&hidden, &self.rotary, cache, None)?;
         }
 
         // Final norm - return hidden states for FlowNet to generate latents
@@ -368,7 +367,7 @@ impl FlowLM {
             // Run voice through transformer (populates KV cache positions 0-124)
             let mut hidden = voice_emb;
             for (i, layer) in self.layers.iter().enumerate() {
-                hidden = layer.forward(&hidden, &self.rotary, Some(&mut self.kv_caches[i]))?;
+                hidden = layer.forward(&hidden, &self.rotary, Some(&mut self.kv_caches[i]), None)?;
                 // Diagnostic: Check hidden stats after each layer
                 if i == 0 || i == 5 {
                     let h_flat: Vec<f32> = hidden.flatten_all()?.to_vec1()?;
@@ -400,7 +399,7 @@ impl FlowLM {
         eprintln!("[FlowLM] text RoPE offset: {} (should be voice seq len)", text_rope_offset);
 
         for (i, layer) in self.layers.iter().enumerate() {
-            hidden = layer.forward(&hidden, &self.rotary, Some(&mut self.kv_caches[i]))?;
+            hidden = layer.forward(&hidden, &self.rotary, Some(&mut self.kv_caches[i]), None)?;
             // Diagnostic: Check hidden stats after each layer
             if i == 0 || i == 5 {
                 let h_flat: Vec<f32> = hidden.flatten_all()?.to_vec1()?;
@@ -449,6 +448,13 @@ impl FlowLM {
         let mut eos_step: Option<usize> = None;
         let mut eos_logits: Vec<f32> = Vec::new(); // Track EOS trajectory for debugging
 
+        // Check env var for step-0 intermediate tensor dump
+        let dump_dir = std::env::var("DUMP_STEP0").ok().map(std::path::PathBuf::from);
+        if let Some(ref dir) = dump_dir {
+            std::fs::create_dir_all(dir).ok();
+            eprintln!("--- Dumping step 0 intermediates to {} ---", dir.display());
+        }
+
         // Start with BOS embedding
         let mut current_latent = self.bos_emb.clone().unsqueeze(0)?.unsqueeze(0)?; // [1, 1, 32]
 
@@ -474,51 +480,25 @@ impl FlowLM {
             // Run through transformer (using KV cache)
             let mut step_hidden = latent_hidden.clone();
 
-            // DIAGNOSTIC: Capture INPUT to layer 0 at step 0 and step 36
-            if step == 0 || step == 36 {
-                let h_flat: Vec<f32> = step_hidden.flatten_all()?.to_vec1()?;
-                let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
-                let h_std = (h_flat.iter().map(|x| (x - h_mean).powi(2)).sum::<f32>() / h_flat.len() as f32).sqrt();
-                eprintln!("[INPUT-L0] Rust step={}: mean={:.6}, std={:.6}", step, h_mean, h_std);
-                eprintln!("[INPUT-L0] Rust step={}: first 8: {:?}", step, &h_flat[..8.min(h_flat.len())]);
+            // Dump intermediates for steps 0-2 to track divergence accumulation
+            let step_dump = if step <= 2 { dump_dir.as_deref() } else { None };
+
+            if let Some(dir) = step_dump {
+                if step > 0 {
+                    eprintln!("--- Step {} intermediates ---", step);
+                }
+                dump_npy(dir, &format!("step{}_input_linear", step), &step_hidden.flatten_all()?)?;
             }
 
             for (i, layer) in self.layers.iter().enumerate() {
-                step_hidden = layer.forward(&step_hidden, &self.rotary, Some(&mut self.kv_caches[i]))?;
-
-                // DIAGNOSTIC: Per-layer hidden state capture at step 0 and step 36
-                if step == 0 || step == 36 {
-                    let h_flat: Vec<f32> = step_hidden.flatten_all()?.to_vec1()?;
-                    let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
-                    let h_std = (h_flat.iter().map(|x| (x - h_mean).powi(2)).sum::<f32>() / h_flat.len() as f32).sqrt();
-                    let h_min = h_flat.iter().cloned().fold(f32::INFINITY, f32::min);
-                    let h_max = h_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                    eprintln!(
-                        "[LAYER-{}] Rust step={}: mean={:.6}, std={:.6}, min={:.6}, max={:.6}",
-                        i, step, h_mean, h_std, h_min, h_max
-                    );
-                    eprintln!(
-                        "[LAYER-{}] Rust step={}: first 8: {:?}",
-                        i,
-                        step,
-                        &h_flat[..8.min(h_flat.len())]
-                    );
-                }
+                // Only dump per-layer detail for step 0; steps 1-2 just get layer outputs
+                let layer_dump = if step == 0 { step_dump.map(|d| (d, i)) } else { None };
+                step_hidden = layer.forward(&step_hidden, &self.rotary, Some(&mut self.kv_caches[i]), layer_dump)?;
             }
             let step_hidden = self.final_norm.forward(&step_hidden)?;
 
-            // DIAGNOSTIC: Final hidden state at step 0 and step 36 (after out_norm)
-            if step == 0 || step == 36 {
-                let h_flat: Vec<f32> = step_hidden.flatten_all()?.to_vec1()?;
-                let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
-                let h_std = (h_flat.iter().map(|x| (x - h_mean).powi(2)).sum::<f32>() / h_flat.len() as f32).sqrt();
-                let h_min = h_flat.iter().cloned().fold(f32::INFINITY, f32::min);
-                let h_max = h_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                eprintln!(
-                    "[FINAL] Rust step={}: mean={:.6}, std={:.6}, min={:.6}, max={:.6}",
-                    step, h_mean, h_std, h_min, h_max
-                );
-                eprintln!("[FINAL] Rust step={}: first 8: {:?}", step, &h_flat[..8.min(h_flat.len())]);
+            if let Some(dir) = step_dump {
+                dump_npy(dir, &format!("step{}_out_norm", step), &step_hidden.flatten_all()?)?;
             }
 
             // Get the last position's hidden state
@@ -581,23 +561,21 @@ impl FlowLM {
             }
 
             // Generate next latent via FlowNet
-            // FlowNet expects [batch, seq, hidden] but we have [batch, hidden]
             let cond = last_hidden.unsqueeze(1)?; // [1, 1, 1024]
-                                                  // Derive per-step seed for different-but-deterministic noise at each step
             let step_seed = seed.map(|s| s.wrapping_add(step as u64));
-            // Use pre-captured noise tensor if available for this step.
-            // Offset by 1 because noise_step_000 corresponds to Python's text prompting
-            // FlowNet call (whose output is discarded). Rust doesn't make that call,
-            // so generation step 0 should use noise_step_001, step 1 uses noise_step_002, etc.
+            // Offset by 1: noise_step_000 = Python's text prompting (discarded)
             let noise_override = noise_tensors.and_then(|nt| nt.get(step + 1));
             let next_normalized =
                 self.flow_net
                     .generate(&cond, num_flow_steps, temperature, &self.device, step_seed, noise_override)?;
 
-            // IMPORTANT: Do NOT denormalize here!
-            // Python feeds the raw FlowNet output back to transformer.
-            // Denormalization only happens when passing to Mimi decoder.
-            // Store normalized latent for later denormalization
+            // Dump FlowNet output (latent) and input_linear output for steps 0-2
+            if let Some(ref dir) = dump_dir {
+                if step <= 2 {
+                    dump_npy(dir, &format!("step{}_latent", step), &next_normalized.flatten_all()?)?;
+                }
+            }
+
             all_latents.push(next_normalized.clone());
             current_latent = next_normalized;
 
@@ -675,7 +653,7 @@ impl FlowLM {
 
             let mut hidden = voice_emb;
             for (i, layer) in self.layers.iter().enumerate() {
-                hidden = layer.forward(&hidden, &self.rotary, Some(&mut self.kv_caches[i]))?;
+                hidden = layer.forward(&hidden, &self.rotary, Some(&mut self.kv_caches[i]), None)?;
             }
             let _ = self.final_norm.forward(&hidden)?;
         }
@@ -683,7 +661,7 @@ impl FlowLM {
         // Phase 2: Process text embeddings (appends to KV cache)
         let mut hidden = text_embeddings;
         for (i, layer) in self.layers.iter().enumerate() {
-            hidden = layer.forward(&hidden, &self.rotary, Some(&mut self.kv_caches[i]))?;
+            hidden = layer.forward(&hidden, &self.rotary, Some(&mut self.kv_caches[i]), None)?;
         }
         let _ = self.final_norm.forward(&hidden)?;
 
@@ -707,7 +685,7 @@ impl FlowLM {
             // Run through transformer (using KV cache)
             let mut step_hidden = latent_hidden;
             for (i, layer) in self.layers.iter().enumerate() {
-                step_hidden = layer.forward(&step_hidden, &self.rotary, Some(&mut self.kv_caches[i]))?;
+                step_hidden = layer.forward(&step_hidden, &self.rotary, Some(&mut self.kv_caches[i]), None)?;
             }
             let step_hidden = self.final_norm.forward(&step_hidden)?;
             let last_hidden = step_hidden.squeeze(1)?;

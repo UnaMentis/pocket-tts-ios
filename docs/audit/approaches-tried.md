@@ -35,15 +35,26 @@ Last updated: 2026-03-19
 - **Status**: DIAGNOSTIC COMPLETE — led to the noise offset discovery
 - **Files**: `validation/capture_step0_all_layers.py`, `validation/capture_flownet_seeded.py`, `validation/capture_flownet_step0.py`
 
+## Approach: Per-layer + multi-step intermediate tensor dump (2026-03-21)
+- **What**: Dumped all intermediate tensors (input, norm1, attn, post_attn, norm2, mlp, output) for all 6 transformer layers at step 0, plus input_linear/out_norm/latent for steps 0-2. Created matching Python and Rust dump scripts with .npy file comparison.
+- **Why**: To determine whether the 0.839→1.0 correlation gap comes from (a) transformer divergence, (b) FlowNet divergence, or (c) Mimi decoder divergence.
+- **Result**: **CRITICAL FINDING — Transformer and FlowNet match perfectly.**
+  - All 44 per-layer tensors at step 0: cosine similarity = 1.0000, RMSE < 1e-6
+  - Latent outputs at steps 0-2: max error grows from 1.9e-6 → 2.5e-6 → 5.6e-6 (normal float32 accumulation)
+  - **The entire 0.839→1.0 gap is in the Mimi decoder**, not the transformer or FlowNet
+  - This invalidates the research advisor's #1 hypothesis (F.scaled_dot_product_attention vs manual attention)
+- **Status**: DIAGNOSTIC COMPLETE — redirects all optimization effort to Mimi decoder
+- **Files**: `validation/dump_intermediates.py`, `src/models/flowlm.rs` (dump_npy helper), `validation/compare_intermediates.py`
+- **Key implication**: The Mimi decoder streaming implementation (replicate padding, ConvTranspose1d overlap-add, decoder transformer KV cache, SEANet streaming) is the sole source of the remaining correlation gap.
+
 ---
 
 ## Not Yet Tried
 
 These are potential approaches that have NOT been attempted:
 
-- **f64 validation pass**: Run critical operations (matmul, softmax, RMSNorm) in f64 to measure f32 accumulation error
-- **Per-layer intermediate tensor dump**: Compare Rust vs Python hidden states at each transformer layer for step 0, using correctly-aligned noise
-- **Weight loading audit**: Verify all weights loaded correctly (transposes, reshapes, dtype)
-- **KV cache drift analysis**: Check if KV cache introduces cumulative precision drift over 125+ voice positions
-- **Text embedding comparison**: Verify `conditioner(tokens)` in Python matches `text_embedding.forward(token_ids)` in Rust
-- **Matmul accumulation order**: Test if Candle and PyTorch produce different results for the same matmul due to summation order
+- **Mimi decoder intermediate comparison**: Dump per-block outputs from Python Mimi decoder vs Rust to find which specific operation (output_proj, upsample, decoder_transformer, SEANet blocks) introduces the most divergence
+- **SEANet streaming vs batch comparison**: Run Rust SEANet in batch mode (all latents at once) to isolate streaming-specific errors
+- **Decoder transformer comparison**: Compare Python's non-causal attention with full KV cache vs Rust implementation
+- **ConvTranspose1d overlap-add validation**: Verify the streaming ConvTranspose1d state management and overlap-add logic matches Python
+- **Replicate padding deep-dive**: Test whether the first-frame replicate padding introduces systematic bias that persists through subsequent frames

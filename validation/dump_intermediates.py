@@ -1,143 +1,196 @@
 #!/usr/bin/env python3
 """
-Dump intermediate tensors from Python Pocket TTS for comparison with Rust.
+Dump per-layer intermediate tensors from Python FlowLM at autoregressive step 0.
 
-This script hooks into the model to capture intermediate values at key points:
-1. Text embeddings (conditioner output)
-2. Audio conditioning (speaker_proj output)
-3. Transformer hidden states
-4. FlowNet conditioning
-5. Generated latents
-6. Mimi decoder intermediates
+Saves tensors to /tmp/python_step0/ for comparison with Rust equivalents.
+Each file is a .npy with shape (1024,) — the hidden dimension at the last token position.
+
+Captured points per layer (6 layers, i=0..5):
+  layer{i}_input.npy       — input to the layer (before norm1)
+  layer{i}_norm1.npy       — after LayerNorm1
+  layer{i}_attn.npy        — raw attention output (before residual add)
+  layer{i}_post_attn.npy   — after attention residual add
+  layer{i}_norm2.npy       — after LayerNorm2
+  layer{i}_mlp.npy         — raw MLP output (before residual add)
+  layer{i}_output.npy      — final layer output (after MLP residual add)
+
+Top-level:
+  input_linear.npy         — output of input_linear (input to layer 0)
+  out_norm.npy             — output of out_norm (final output)
 
 Usage:
-    python dump_intermediates.py --output-dir ./debug_outputs
+    cd /tmp && /path/to/validation/.venv/bin/python3 /path/to/validation/dump_intermediates.py
 """
 
-import argparse
-import json
 import os
-from functools import partial
+import shutil
 from pathlib import Path
 
 import numpy as np
 import torch
-from pocket_tts import TTSModel
+import torch.nn.functional as F
 
-# Global dict to store intermediate tensors
-INTERMEDIATES = {}
+DUMP_DIR = Path("/tmp/python_step0")
+PHRASE = "Hello, this is a test of the Pocket TTS system."
+VOICE = "alba"
+SEED = 42
+CONSISTENCY_STEPS = 1
 
 
-def hook_factory(name):
-    """Create a forward hook that saves the output."""
-    def hook(module, input, output):
-        if isinstance(output, tuple):
-            output = output[0]
-        INTERMEDIATES[name] = output.detach().cpu().numpy()
-    return hook
+def save(name, tensor):
+    """Save tensor as .npy — extract last position, squeeze to 1D."""
+    arr = tensor.detach().cpu().float().numpy()
+    # Squeeze batch dims
+    while arr.ndim > 1 and arr.shape[0] == 1:
+        arr = arr[0]
+    # Take last position if 2D (seq_len, dim)
+    if arr.ndim == 2:
+        arr = arr[-1]
+    np.save(str(DUMP_DIR / f"{name}.npy"), arr)
+    print(f"  {name}: shape={arr.shape} mean={arr.mean():.6f} std={arr.std():.6f} "
+          f"first4=[{arr[0]:.6f},{arr[1]:.6f},{arr[2]:.6f},{arr[3]:.6f}]")
+
+
+def patch_transformer_layers(transformer):
+    """Monkey-patch each layer's forward to dump intermediates at step 0."""
+    # Track whether we've seen step 0 (first autoregressive call with seq_len=1)
+    state = {"dumped": False}
+
+    for layer_idx, layer in enumerate(transformer.layers):
+        def make_patched(li, lyr):
+            def patched_forward(x, model_state=None):
+                # Detect step 0: seq_len=1 and haven't dumped yet
+                is_step0 = (x.shape[1] == 1 and not state["dumped"])
+
+                if is_step0:
+                    save(f"layer{li}_input", x[:, -1:, :])
+
+                # -- Self-attention block (inlined from _sa_block) --
+                x_orig = x
+                normed = lyr.norm1(x)
+                if is_step0:
+                    save(f"layer{li}_norm1", normed[:, -1:, :])
+
+                attn_out = lyr.self_attn(normed, model_state)
+                if is_step0:
+                    save(f"layer{li}_attn", attn_out[:, -1:, :])
+
+                x = x_orig.to(attn_out) + lyr.layer_scale_1(attn_out)
+                if is_step0:
+                    save(f"layer{li}_post_attn", x[:, -1:, :])
+
+                # -- Feed-forward block (inlined from _ff_block) --
+                x_orig2 = x
+                normed2 = lyr.norm2(x)
+                if is_step0:
+                    save(f"layer{li}_norm2", normed2[:, -1:, :])
+
+                mlp_out = lyr.linear2(F.gelu(lyr.linear1(normed2)))
+                if is_step0:
+                    save(f"layer{li}_mlp", mlp_out[:, -1:, :])
+
+                x = x_orig2.to(mlp_out) + lyr.layer_scale_2(mlp_out)
+                if is_step0:
+                    save(f"layer{li}_output", x[:, -1:, :])
+                    # Mark step 0 done after last layer
+                    if li == len(transformer.layers) - 1:
+                        state["dumped"] = True
+
+                return x
+            return patched_forward
+
+        layer.forward = make_patched(layer_idx, layer)
+
+
+def patch_backbone(flow_lm):
+    """Patch FlowLM.backbone to capture input_linear and out_norm at steps 0-2."""
+    state = {"step": 0}
+
+    def patched_backbone(input_, text_embeddings, sequence, model_state):
+        step = state["step"]
+        is_ar = (sequence.shape[1] == 1)
+
+        input_cat = torch.cat([text_embeddings, input_], dim=1)
+
+        if is_ar and step <= 2:
+            if step > 0:
+                print(f"\n--- Step {step} intermediates ---")
+            save(f"step{step}_input_linear", input_cat[:, -1:, :])
+
+        transformer_out = flow_lm.transformer(input_cat, model_state)
+
+        if flow_lm.out_norm:
+            transformer_out = flow_lm.out_norm(transformer_out)
+
+        transformer_out = transformer_out[:, -sequence.shape[1]:]
+
+        if is_ar and step <= 2:
+            save(f"step{step}_out_norm", transformer_out[:, -1:, :])
+
+        if is_ar:
+            state["step"] += 1
+
+        return transformer_out
+
+    flow_lm.backbone = patched_backbone
+
+
+def patch_forward_for_latent(flow_lm):
+    """Patch FlowLM.forward to capture FlowNet output (latent) at steps 0-2."""
+    orig_forward = flow_lm.forward
+    state = {"step": 0}
+
+    def patched_forward(**kwargs):
+        result = orig_forward(**kwargs)
+        step = state["step"]
+        sequence = kwargs.get("sequence")
+        is_ar = (sequence is not None and sequence.shape[1] == 1)
+
+        if is_ar and step <= 2:
+            latent, eos = result
+            save(f"step{step}_latent", latent)
+
+        if is_ar:
+            state["step"] += 1
+
+        return result
+
+    flow_lm.forward = patched_forward
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Dump intermediate tensors from Pocket TTS")
-    parser.add_argument("--output-dir", type=Path, default=Path("debug_outputs"))
-    parser.add_argument("--text", type=str, default="Hello, this is a test of the Pocket TTS system.")
-    parser.add_argument("--voice", type=str, default="alba")
-    args = parser.parse_args()
-
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    if DUMP_DIR.exists():
+        shutil.rmtree(DUMP_DIR)
+    DUMP_DIR.mkdir(parents=True)
 
     print("Loading model...")
+    from pocket_tts import TTSModel
     model = TTSModel.load_model()
-    print(f"Sample rate: {model.sample_rate}")
 
-    # Get voice state
-    print(f"Getting voice state for '{args.voice}'...")
-    voice_state = model.get_state_for_audio_prompt(args.voice)
+    flow_lm = model.flow_lm
+    n_layers = len(flow_lm.transformer.layers)
+    print(f"Patching {n_layers} transformer layers...")
 
-    # Hook key modules to capture intermediates
-    print("Setting up hooks...")
+    patch_transformer_layers(flow_lm.transformer)
+    patch_backbone(flow_lm)
+    patch_forward_for_latent(flow_lm)
 
-    # Hook conditioner (text embeddings)
-    if hasattr(model.flow_lm, 'conditioner'):
-        model.flow_lm.conditioner.register_forward_hook(hook_factory('conditioner_output'))
+    print(f"Getting voice state for '{VOICE}'...")
+    voice_state = model.get_state_for_audio_prompt(VOICE)
 
-    # Hook flow_net (latent generation)
-    if hasattr(model.flow_lm, 'flow_net'):
-        model.flow_lm.flow_net.register_forward_hook(hook_factory('flownet_output'))
+    torch.manual_seed(SEED)
+    print(f"Generating: \"{PHRASE}\" (seed={SEED}, steps={CONSISTENCY_STEPS})")
+    print()
+    print("--- Step 0 intermediate tensors ---")
 
-    # Hook out_norm (final hidden states before FlowNet)
-    if hasattr(model.flow_lm, 'out_norm'):
-        model.flow_lm.out_norm.register_forward_hook(hook_factory('out_norm'))
+    # lsd_decode_steps defaults to 1 (matches Rust consistency_steps=1)
+    print(f"lsd_decode_steps={model.lsd_decode_steps}")
+    audio = model.generate_audio(voice_state, PHRASE)
 
-    # Hook input_linear (latent -> hidden projection)
-    if hasattr(model.flow_lm, 'input_linear'):
-        model.flow_lm.input_linear.register_forward_hook(hook_factory('input_linear'))
-
-    # Generate with monitoring
-    print(f"\nGenerating audio for: '{args.text}'")
-
-    # Tokenize - use the conditioner's tokenization method
-    tokenizer = model.flow_lm.conditioner.tokenizer
-    tokens = tokenizer.sp.encode(args.text)
-    print(f"Tokens ({len(tokens)}): {tokens}")
-
-    # Save token info
-    token_info = {
-        "text": args.text,
-        "tokens": tokens,
-        "num_tokens": len(tokens),
-    }
-
-    # Generate audio
-    audio = model.generate_audio(voice_state, args.text)
-    audio_np = audio.numpy()
-
-    print(f"\nGenerated {len(audio_np)} samples ({len(audio_np) / model.sample_rate:.2f}s)")
-    print(f"Max amplitude: {np.max(np.abs(audio_np)):.4f}")
-
-    # Save all intermediates
-    print(f"\nSaving intermediates to {args.output_dir}...")
-
-    # Save token info
-    with open(args.output_dir / "token_info.json", "w") as f:
-        json.dump(token_info, f, indent=2)
-
-    # Save audio
-    np.save(args.output_dir / "audio.npy", audio_np)
-
-    # Save captured intermediates
-    for name, tensor in INTERMEDIATES.items():
-        print(f"  {name}: shape={tensor.shape}, mean={np.mean(tensor):.6f}, std={np.std(tensor):.6f}")
-        np.save(args.output_dir / f"{name}.npy", tensor)
-
-    # Also dump model state info
-    print("\nModel component info:")
-    print(f"  flow_lm.ldim (latent dim): {model.flow_lm.ldim}")
-    print(f"  flow_lm.dim (hidden dim): {model.flow_lm.dim}")
-
-    # Dump bos_emb and emb_mean/emb_std
-    bos = model.flow_lm.bos_emb.detach().cpu().numpy()
-    emb_mean = model.flow_lm.emb_mean.detach().cpu().numpy()
-    emb_std = model.flow_lm.emb_std.detach().cpu().numpy()
-
-    print(f"  bos_emb: shape={bos.shape}, first 8: {bos[:8]}")
-    print(f"  emb_mean: shape={emb_mean.shape}, first 8: {emb_mean[:8]}")
-    print(f"  emb_std: shape={emb_std.shape}, first 8: {emb_std[:8]}")
-
-    np.save(args.output_dir / "bos_emb.npy", bos)
-    np.save(args.output_dir / "emb_mean.npy", emb_mean)
-    np.save(args.output_dir / "emb_std.npy", emb_std)
-
-    # Dump audio conditioning from voice state
-    if 'audio_conditioning' in voice_state:
-        audio_cond = voice_state['audio_conditioning']
-        if isinstance(audio_cond, torch.Tensor):
-            audio_cond = audio_cond.detach().cpu().numpy()
-        print(f"  audio_conditioning: shape={audio_cond.shape}, mean={np.mean(audio_cond):.6f}")
-        np.save(args.output_dir / "audio_conditioning.npy", audio_cond)
-
-    print(f"\nDone! Outputs saved to {args.output_dir}")
-    print("\nCompare with Rust outputs to identify divergence point.")
+    print()
+    files = sorted(os.listdir(DUMP_DIR))
+    print(f"Done. {len(audio.numpy())} samples generated.")
+    print(f"Saved {len(files)} tensor files to {DUMP_DIR}/")
 
 
 if __name__ == "__main__":

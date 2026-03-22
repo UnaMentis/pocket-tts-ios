@@ -20,14 +20,14 @@ Instead of a single agent grinding through endless debugging, this project uses 
 
 ## Agent Registry
 
-| Agent | Prompt File | Output Location | Frequency |
-|-------|-------------|-----------------|-----------|
+| Agent | Skill / Prompt | Output Location | Frequency |
+|-------|----------------|-----------------|-----------|
 | Implementation | (human session) | Code, PORTING_STATUS.md | Active development |
-| Cleanup Auditor | [cleanup-audit.md](cleanup-audit.md) | audit/cleanup-audit-report-1.md | Every 2-3 sessions |
-| Research Advisor | [research-advisor.md](research-advisor.md) | audit/research-advisor-report-1.md | When stuck / daily |
-| Verification | [verification-agent.md](verification-agent.md) | audit/verification-report-1.md | After code changes |
-| Progress Tracker | [progress-tracker.md](progress-tracker.md) | audit/progress-dashboard.md | Weekly |
-| Autotuning | [../../autotuning/program.md](../../autotuning/program.md) | autotuning/REPORT.md, memory.json | On demand / continuous |
+| **Optimize** | `/optimize` | autotuning/REPORT.md, memory.json, results.tsv | On demand / `/loop` |
+| Verification | `/verify` | audit/verification-report-1.md | After code changes |
+| Research Advisor | `/research` | audit/research-advisor-report-1.md | When stuck / daily |
+| Cleanup Auditor | `/cleanup` | audit/cleanup-audit-report-1.md | Every 2-3 sessions |
+| Progress Tracker | `/progress` | audit/progress-dashboard.md | Weekly |
 
 ---
 
@@ -103,13 +103,15 @@ Instead of a single agent grinding through endless debugging, this project uses 
 - **Purpose:** Motivation, timeline estimation, stakeholder updates
 - **Read output:** Plan next week's focus
 
-### Autotuning Agent
+### Optimize Agent (`/optimize`)
 - **Trigger:** When quality metrics plateau or after major code changes
-- **Duration:** Runs indefinitely (autonomous loop)
-- **Purpose:** Iteratively optimize TTS quality via autoresearch-style modify → evaluate → keep/discard loop
-- **Setup:** Run on a dedicated branch. Start with `--phase baseline` to verify prerequisites
-- **Read output:** Check `autotuning/REPORT.md`, `memory.json`, and git log for accumulated improvements
-- **Details:** See [autotuning/README.md](../../autotuning/README.md) for full usage
+- **Duration:** ~5 minutes per iteration (one change, one evaluation)
+- **Purpose:** One optimization iteration with fresh context: hypothesize → change → evaluate → keep/discard
+- **Invocation:** `/optimize` for single iteration, `/loop 5m /optimize` for continuous autonomous operation
+- **Focused:** `/optimize "mimi decoder SEANet blocks"` to direct the agent's focus
+- **Fresh context:** Uses `context: fork` — each invocation starts completely clean, reads state from disk
+- **Read output:** Check `autotuning/REPORT.md`, `memory.json`, and `docs/audit/approaches-tried.md`
+- **Details:** See `.claude/skills/optimize/SKILL.md` for full methodology
 
 ---
 
@@ -119,6 +121,8 @@ Instead of a single agent grinding through endless debugging, this project uses 
 
 Agents are now available as Claude Code skills (slash commands). Just type:
 
+- `/optimize` — One optimization iteration (fresh context, loopable)
+- `/optimize "mimi decoder"` — Focused optimization on a specific area
 - `/verify` — Run verification tests and report metrics
 - `/research` — Deep research and fresh perspective on blockers
 - `/research transformer precision` — Focused research on a specific topic

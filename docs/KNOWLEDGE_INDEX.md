@@ -14,9 +14,9 @@ Last distilled: 2026-03-19
 | Component | Status | Key Detail |
 |-----------|--------|------------|
 | Tokenizer | Match | SentencePiece, matches Python exactly |
-| FlowLM (6-layer transformer) | Working | Hidden states diverge slightly from Python — remaining bottleneck |
-| FlowNet (consistency sampling) | Working | Noise-matched with off-by-one correction |
-| Mimi Decoder | Working | Full streaming with replicate padding, ~0.74 standalone correlation |
+| FlowLM (6-layer transformer) | **Match** | Matches Python perfectly — cos_sim=1.0, max_err<1e-6 per step (verified 2026-03-21) |
+| FlowNet (consistency sampling) | **Match** | Noise-matched with off-by-one correction. Latents match to 1e-6. |
+| Mimi Decoder | Working | **Remaining bottleneck** — streaming diverges from Python. ~0.74 standalone, sole source of 0.839→1.0 gap |
 | SEANet | Working | Streaming Conv1d + ConvTranspose1d |
 | EOS Detection | Working | Threshold -4.0, natural detection |
 | Audio Output | Working | Int16 PCM WAV, 24kHz, healthy amplitudes |
@@ -138,10 +138,13 @@ Text → SentencePiece → FlowLM (transformer, 6 layers)
 
 | Tool | Purpose |
 |------|---------|
+| `/optimize` skill | One-iteration optimization with fresh context, loopable via `/loop 5m /optimize` |
+| `/verify` skill | Noise-matched correlation test, composite scoring, latency benchmark |
+| `/research` skill | External research, methodology validation, fresh hypotheses |
 | `validation/quality_metrics.py` | WER, MCD, SNR, THD measurement |
 | `validation/baseline_tracker.py` | Baseline comparison |
-| `autotuning/scorer.py` | Composite quality score |
+| `autotuning/scorer.py` | Composite quality score (Correlation 50%, WER 20%, MCD 15%, SNR 8%, THD 7%) |
 | `autotuning/memory.py` | Structured experiment memory |
-| `autotuning/autotune.py` | Automated tuning loop |
-| `autotuning/program.md` | AI agent instructions for autonomous tuning |
+| `autotuning/autotune.py` | Automated parameter tuning loop (config-level, not code-level) |
+| `autotuning/program.md` | Legacy methodology reference (active implementation is `/optimize` skill) |
 | `docs/audit/approaches-tried.md` | Structured log of optimization attempts and results |

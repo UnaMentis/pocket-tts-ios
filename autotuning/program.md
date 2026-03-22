@@ -1,14 +1,17 @@
 # Pocket TTS Autotuning Agent Instructions
 
+> **LEGACY REFERENCE**: This file documents the optimization methodology. The active implementation is the **`/optimize` skill** at `.claude/skills/optimize/SKILL.md`, which runs one iteration per invocation with fresh context via `context: fork`. Use `/optimize` directly or `/loop 5m /optimize` for continuous operation.
+
 You are an autonomous AI research agent optimizing the audio quality of a Rust/Candle TTS (Text-to-Speech) system. Your goal is to iteratively improve the composite quality score toward 1.0 through small, evidence-based incremental changes.
 
 ## Your Environment
 
 - **Project**: Pocket TTS iOS — a Rust port of Kyutai's Pocket TTS
-- **Working directory**: The root of the pocket-tts-ios repository
+- **Working directory**: The root of the pocket-tts repository
 - **Python**: Use `.venv/bin/python` (venv at project root with all deps installed)
-- **Quality metrics**: WER, MCD, SNR, THD, correlation → composite score [0, 1]
+- **Quality metrics**: Correlation (50%), WER (20%), MCD (15%), SNR (8%), THD (7%) → composite score [0, 1]
 - **Reference audio**: `validation/reference_outputs/` — Python ground truth for MCD/correlation
+- **Noise tensors**: `validation/reference_outputs/noise/` — for noise-matched correlation testing
 - **Results log**: `autotuning/results.tsv` — append-only experiment history (flat TSV)
 - **Experiment memory**: `autotuning/memory.json` — structured memory with safe ranges, rules, methodology guidance
 - **Best config**: `autotuning/configs/best.json` — current champion
@@ -123,7 +126,7 @@ The size of your changes depends on the current score level:
 | MCD high (>100) | Spectral mismatch | Fine-tune temperature (±0.05) | FlowNet time embedding |
 | SNR low (<24dB) | Noise in latents | Lower temperature (small step) | FlowNet noise schedule |
 | THD high (>30%) | Harmonic artifacts | consistency_steps +1 | Mimi decoder precision (f64) |
-| Correlation low | Expected for cross-impl | N/A — deprioritize | Streaming state improvements |
+| Correlation low (<0.95) | Mimi decoder streaming divergence | Compare per-block Mimi outputs Py vs Rust | SEANet streaming vs batch mode |
 
 4. Also check **methodology guidance** in memory — it has specific advice per bottleneck.
 
@@ -238,20 +241,19 @@ cargo run --release --bin test-tts -- \
 ## Reading the Score
 
 ```
-Composite Score: 0.5256
+Composite Score: 0.8390
 
 Components:
-  intelligibility          : 1.0000 (weight: 0.40)  ← WER (perfect)
-  acoustic_similarity      : 0.3038 (weight: 0.25)  ← MCD (bottleneck!)
-  signal_quality           : 0.3156 (weight: 0.15)  ← SNR
-  correlation              : 0.0228 (weight: 0.10)  ← expected low for cross-impl
-  distortion               : 0.0000 (weight: 0.10)  ← THD (needs work)
+  correlation              : 0.8390 (weight: 0.50)  ← PRIMARY metric
+  intelligibility          : 1.0000 (weight: 0.20)  ← WER (perfect)
+  acoustic_similarity      : 0.3038 (weight: 0.15)  ← MCD
+  signal_quality           : 0.3156 (weight: 0.08)  ← SNR
+  distortion               : 0.0000 (weight: 0.07)  ← THD
 ```
 
 **Strategy**: Target the component with the lowest normalized score AND highest weight.
-In this example, `acoustic_similarity` (0.30, weight 0.25) is the best target.
 
-**Important**: Correlation will be naturally low (~0.02) for cross-implementation comparison because FlowNet random noise produces different waveforms each time. This is expected and documented in KNOWLEDGE_INDEX. Don't waste iterations trying to improve correlation — focus on MCD, WER, SNR, and THD.
+**CRITICAL**: Correlation is THE primary metric (50% weight). With noise-matched testing (`--noise-dir`), correlation = 0.839 as of 2026-03-21. The entire remaining gap is in the **Mimi decoder** — transformer and FlowNet match Python perfectly. Always use noise-matched testing for evaluation.
 
 ## Self-Improvement Protocol
 

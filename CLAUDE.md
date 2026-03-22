@@ -271,6 +271,7 @@ This project uses a multi-agent collaboration pattern for development. See [docs
 
 | When | Skill | What It Does |
 |------|-------|--------------|
+| Quality optimization | `/optimize` | One iteration: hypothesize, change, evaluate, keep/discard. Use `/loop 5m /optimize` for continuous. |
 | After code changes to `src/models/` or `src/modules/` | `/verify` | Noise-matched correlation test, composite scoring, latency |
 | When stuck for >1 hour | `/research` | External research, methodology validation, fresh hypotheses |
 | Before committing changes | `/cleanup` | Finds debug code, dead code, technical debt |
@@ -278,7 +279,9 @@ This project uses a multi-agent collaboration pattern for development. See [docs
 
 ### Running an Agent
 
-**Preferred:** Type the skill command (e.g., `/verify`, `/research transformer precision`)
+**Preferred:** Type the skill command (e.g., `/optimize`, `/verify`, `/research transformer precision`)
+
+**Continuous optimization:** `/loop 5m /optimize` runs fresh-context iterations every 5 minutes.
 
 **Alternative:** For full session isolation, paste prompts from `docs/prompts/` into a fresh session.
 
