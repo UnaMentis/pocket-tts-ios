@@ -47,14 +47,48 @@ Last updated: 2026-03-19
 - **Files**: `validation/dump_intermediates.py`, `src/models/flowlm.rs` (dump_npy helper), `validation/compare_intermediates.py`
 - **Key implication**: The Mimi decoder streaming implementation (replicate padding, ConvTranspose1d overlap-add, decoder transformer KV cache, SEANet streaming) is the sole source of the remaining correlation gap.
 
+## Approach: Mimi decoder per-block intermediate comparison (2026-03-21)
+- **What**: Added `forward_streaming_with_dump` to Rust Mimi decoder that saves .npy files at each stage (output_proj, upsample, decoder_transformer, SEANet per-layer). Created matching Python script to process the same denormalized latents and compare sub-layer outputs.
+- **Why**: The entire 0.839→1.0 gap was confirmed to be in the Mimi decoder. Needed to find which specific block diverges.
+- **Result**: **CRITICAL FINDING — Decoder transformer is the sole divergence source.**
+  - output_proj: cos=1.000000, max_err=1.9e-6 — PERFECT MATCH
+  - upsample: cos=1.000000, max_err=4.8e-7 — PERFECT MATCH
+  - **decoder_transformer: cos=0.178** — MASSIVE DIVERGENCE
+  - SEANet layers cascade the transformer divergence further
+- **Status**: DIAGNOSTIC COMPLETE — pinpointed divergence to decoder transformer
+- **Files**: `src/models/mimi.rs` (forward_streaming_with_dump, seanet_forward_with_dump, dump_npy), `validation/dump_mimi_per_block.py`, `validation/compare_mimi_modes.py`
+
+## Approach: Decoder transformer sub-layer comparison (2026-03-21)
+- **What**: Added per-sub-layer dumps inside the Rust decoder transformer (norm1, in_proj, QKV split, RoPE Q/K, attention scores/probs/output). Created Python comparison script that processes identical inputs.
+- **Why**: To identify the exact operation within the transformer causing cos=0.178 divergence.
+- **Result**: **ROOT CAUSE FOUND — Missing causal + context window attention mask.**
+  - All sub-layers match perfectly through Q/K after RoPE (cos=1.000000)
+  - Attention scores pre-mask: cos=1.000000 (identical)
+  - **Python uses causal attention with context=250 window (62.2% of entries masked)**
+  - **Rust used NO mask (full bidirectional attention)**
+  - This caused attention probabilities to diverge (cos=0.823) cascading to complete output divergence
+- **Status**: DIAGNOSTIC COMPLETE — root cause identified
+- **Files**: `validation/compare_transformer_sublayers.py`
+
+## Approach: Add causal + context window mask to decoder transformer (2026-03-21)
+- **What**: Added `build_causal_context_mask` to `DecoderTransformerLayer` that creates a lower-triangular (causal) mask with context window of 250. Applied to both batch `forward()` and streaming `forward_streaming()` methods. Also added `transformer_context: usize` to `MimiConfig` (default=250) and propagated through `DecoderTransformer::new`.
+- **Why**: Python's `MimiStreamingMultiheadAttention` uses `attn_bias = (pos_k >= 0) & (delta >= 0) & (delta < context)` which creates a causal mask where each position attends to at most 250 preceding positions. Rust was missing this entirely.
+- **Result**: **CORRELATION: 0.839 → 1.000** — PERFECT MATCH ACHIEVED
+  - Composite score: 0.8822 (GOOD)
+  - WER: 0.0% (perfect intelligibility)
+  - MCD: 0.18 dB (excellent)
+  - All 45 frames >0.9 correlation
+  - Frame median correlation: 1.0000
+- **Status**: APPLIED — the primary correlation gap is now fully closed
+- **Files**: `src/models/mimi.rs` (DecoderTransformerLayer::forward, forward_streaming, build_causal_context_mask, build_streaming_causal_mask, MimiConfig)
+
 ---
 
 ## Not Yet Tried
 
 These are potential approaches that have NOT been attempted:
 
-- **Mimi decoder intermediate comparison**: Dump per-block outputs from Python Mimi decoder vs Rust to find which specific operation (output_proj, upsample, decoder_transformer, SEANet blocks) introduces the most divergence
-- **SEANet streaming vs batch comparison**: Run Rust SEANet in batch mode (all latents at once) to isolate streaming-specific errors
-- **Decoder transformer comparison**: Compare Python's non-causal attention with full KV cache vs Rust implementation
+- **SEANet streaming vs batch comparison**: Run Rust SEANet in batch mode (all latents at once) to isolate streaming-specific errors (may no longer be needed since correlation=1.0)
 - **ConvTranspose1d overlap-add validation**: Verify the streaming ConvTranspose1d state management and overlap-add logic matches Python
 - **Replicate padding deep-dive**: Test whether the first-frame replicate padding introduces systematic bias that persists through subsequent frames
+- **THD/SNR improvement**: Composite score is 0.8822 — investigate why THD=37% and SNR=21.6dB, and whether these can be improved

@@ -7,16 +7,16 @@ Last distilled: 2026-03-19
 
 ## Current State
 
-**Status**: Production ready. Correlation optimization in progress.
+**Status**: Production ready. Correlation gap fully closed.
 
-**Key metric**: End-to-end waveform correlation = **0.839** (noise-matched, phrase_00). Target: >0.95.
+**Key metric**: End-to-end waveform correlation = **1.000** (noise-matched, phrase_00). Target: >0.95. ACHIEVED.
 
 | Component | Status | Key Detail |
 |-----------|--------|------------|
 | Tokenizer | Match | SentencePiece, matches Python exactly |
 | FlowLM (6-layer transformer) | **Match** | Matches Python perfectly — cos_sim=1.0, max_err<1e-6 per step (verified 2026-03-21) |
 | FlowNet (consistency sampling) | **Match** | Noise-matched with off-by-one correction. Latents match to 1e-6. |
-| Mimi Decoder | Working | **Remaining bottleneck** — streaming diverges from Python. ~0.74 standalone, sole source of 0.839→1.0 gap |
+| Mimi Decoder | **Match** | Correlation=1.0 after adding causal+context mask to decoder transformer (2026-03-21) |
 | SEANet | Working | Streaming Conv1d + ConvTranspose1d |
 | EOS Detection | Working | Threshold -4.0, natural detection |
 | Audio Output | Working | Int16 PCM WAV, 24kHz, healthy amplitudes |
@@ -40,10 +40,12 @@ Last distilled: 2026-03-19
 - **Fix**: All convolutions (input_conv, residual blocks, output_conv) must use streaming
 - **Impact**: Correlation jumped from 0.13 to 0.69
 
-### 4. Decoder Transformer Uses Non-Causal (Full) Attention
-- **Bug**: Rust applied causal mask; Python uses full self-attention in decoder
-- **Fix**: Removed causal mask from decoder transformer streaming
-- **Impact**: Part of the 0.13 → 0.69 correlation improvement
+### 4. Decoder Transformer Uses CAUSAL Attention with Context Window
+- **Historical bug (2026-03 early)**: Rust applied strict causal mask; was changed to full bidirectional (no mask). Both were wrong.
+- **Actual Python behavior**: `MimiStreamingMultiheadAttention` uses `context=250` — a causal mask where each position attends to at most 250 preceding positions. 62.2% of attention entries are masked for typical sequences.
+- **Root cause of 0.839→1.0 gap**: Rust used NO mask (full bidirectional), Python uses causal+context. This made attention probabilities diverge (cos=0.823) cascading to transformer output cos=0.178.
+- **Fix (2026-03-21)**: Added `build_causal_context_mask()` — generates lower-triangular mask with context window. Applied to both batch and streaming forward methods.
+- **Impact**: Correlation 0.839 → **1.000** (perfect match)
 
 ### 5. First-Frame Replicate Padding Matters
 - **Bug**: Rust used zero padding for initial Conv1d context; Python uses `pad_mode="replicate"`

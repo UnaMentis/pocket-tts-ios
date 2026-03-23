@@ -664,6 +664,68 @@ impl PocketTTSModel {
 
         Ok((audio_vec, latents_flat, latent_shape))
     }
+
+    /// Synthesize audio and dump Mimi decoder intermediates for diagnostic comparison.
+    ///
+    /// Same pipeline as `synthesize` but uses `forward_streaming_with_dump` to save
+    /// per-block .npy files for the first N frames.
+    pub fn synthesize_with_mimi_dump(
+        &mut self,
+        text: &str,
+        dump_dir: &std::path::Path,
+        dump_frames: usize,
+    ) -> std::result::Result<Vec<f32>, PocketTTSError> {
+        eprintln!("[PocketTTS] synthesize_with_mimi_dump");
+
+        let token_ids = self.tokenizer.encode(text)?;
+        let token_tensor = Tensor::from_vec(
+            token_ids.iter().map(|&id| id as i64).collect::<Vec<_>>(),
+            (1, token_ids.len()),
+            &self.device,
+        )
+        .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
+
+        let voice = if let Some(ref custom) = self.custom_voice {
+            Some(custom)
+        } else {
+            self.voice_bank.get(self.config.voice_index as usize)
+        };
+
+        self.flowlm.reset_cache();
+
+        let num_flow_steps = 1;
+        let seed = if self.config.use_fixed_seed {
+            Some(self.config.seed as u64)
+        } else {
+            None
+        };
+        let noise_ref = self.noise_tensors.as_deref();
+        let latents = self
+            .flowlm
+            .generate_latents(&token_tensor, voice, num_flow_steps, self.config.temperature, seed, noise_ref)
+            .map_err(|e| PocketTTSError::InferenceFailed(format!("FlowLM: {}", e)))?;
+
+        // Denormalize
+        let latents = self
+            .flowlm
+            .denormalize_latents(&latents)
+            .map_err(|e| PocketTTSError::InferenceFailed(format!("Denormalize: {}", e)))?;
+
+        // Create dump directory
+        std::fs::create_dir_all(dump_dir)
+            .map_err(|e| PocketTTSError::InferenceFailed(format!("mkdir: {}", e)))?;
+
+        // Decode with dump
+        let audio = self
+            .mimi
+            .forward_streaming_with_dump(&latents, dump_dir, dump_frames)
+            .map_err(|e| PocketTTSError::InferenceFailed(format!("Mimi: {}", e)))?;
+
+        let audio = audio.squeeze(0).map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
+        let audio_vec: Vec<f32> = audio.to_vec1().map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
+
+        Ok(audio_vec)
+    }
 }
 
 impl std::fmt::Debug for PocketTTSModel {

@@ -91,6 +91,9 @@ pub struct MimiConfig {
     pub sample_rate: usize,
     pub frame_rate: f32,
     pub num_transformer_layers: usize,
+    /// Context window for decoder transformer attention (causal + windowed).
+    /// Matches Python's MimiStreamingMultiheadAttention context parameter.
+    pub transformer_context: usize,
 }
 
 impl Default for MimiConfig {
@@ -101,6 +104,7 @@ impl Default for MimiConfig {
             sample_rate: 24000,
             frame_rate: 12.5,
             num_transformer_layers: 2,
+            transformer_context: 250,
         }
     }
 }
@@ -432,13 +436,15 @@ struct DecoderTransformerLayer {
     layer_scale_2: Tensor,
     num_heads: usize,
     head_dim: usize,
+    /// Context window for causal attention mask
+    context: usize,
     // Streaming state (KV cache)
     k_cache: Option<Tensor>,
     v_cache: Option<Tensor>,
 }
 
 impl DecoderTransformerLayer {
-    fn new(dim: usize, num_heads: usize, vb: VarBuilder) -> Result<Self> {
+    fn new(dim: usize, num_heads: usize, context: usize, vb: VarBuilder) -> Result<Self> {
         let head_dim = dim / num_heads;
 
         let norm1 = LayerNorm::new(dim, 1e-5, vb.pp("norm1"))?;
@@ -467,6 +473,7 @@ impl DecoderTransformerLayer {
             layer_scale_2,
             num_heads,
             head_dim,
+            context,
             k_cache: None,
             v_cache: None,
         })
@@ -474,6 +481,7 @@ impl DecoderTransformerLayer {
 
     fn forward(&self, x: &Tensor, rope: &crate::modules::rotary::RotaryEmbedding) -> Result<Tensor> {
         let (batch, seq, dim) = x.dims3()?;
+        let device = x.device();
 
         // Self-attention
         let h = self.norm1.forward(x)?;
@@ -495,14 +503,25 @@ impl DecoderTransformerLayer {
         let q = q.permute((0, 2, 1, 3))?;
         let k = k.permute((0, 2, 1, 3))?;
 
-        // Scaled dot-product attention - NON-CAUSAL (bidirectional)
-        // The decoder transformer uses bidirectional attention, not causal
-        // (See HuggingFace transformers MimiDecoder implementation)
+        // Scaled dot-product attention with CAUSAL + context window mask
+        // Matches Python's MimiStreamingMultiheadAttention:
+        //   pos_q[i] = i, pos_k[j] = j
+        //   delta = pos_q - pos_k
+        //   attend if: pos_k >= 0 AND delta >= 0 AND delta < context
+        // This creates a causal mask where each position attends to at most
+        // `context` preceding positions (including itself).
         let scale = (self.head_dim as f64).sqrt();
         let attn = q.matmul(&k.transpose(2, 3)?)?;
         let attn = (attn / scale)?;
 
-        // No causal mask - full bidirectional attention
+        // Build causal + context window mask: [1, 1, seq, seq]
+        // mask[i][j] = true if i >= j AND (i - j) < context
+        let mask = Self::build_causal_context_mask(seq, self.context, device)?;
+        // Apply mask: where mask is false (should NOT attend), set to -inf
+        let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?
+            .broadcast_as(attn.shape())?;
+        let attn = mask.broadcast_as(attn.shape())?.where_cond(&attn, &neg_inf)?;
+
         let attn = candle_nn::ops::softmax(&attn, 3)?;
         let attn_out = attn.matmul(&v)?;
 
@@ -526,12 +545,108 @@ impl DecoderTransformerLayer {
         x + h
     }
 
-    /// Streaming forward with KV cache
+    /// Build a causal + context window attention mask.
+    /// mask[i][j] = (i >= j) AND (i - j < context)
+    /// Returns shape [1, 1, seq, seq] as u8 tensor (1=attend, 0=mask)
+    fn build_causal_context_mask(seq: usize, context: usize, device: &Device) -> Result<Tensor> {
+        // row indices [seq, 1]
+        let rows: Vec<f32> = (0..seq).map(|i| i as f32).collect();
+        let rows = Tensor::from_vec(rows, (seq, 1), device)?;
+        // col indices [1, seq]
+        let cols: Vec<f32> = (0..seq).map(|j| j as f32).collect();
+        let cols = Tensor::from_vec(cols, (1, seq), device)?;
+        // delta = row - col: [seq, seq]
+        let delta = rows.broadcast_sub(&cols)?;
+        // mask: delta >= 0 AND delta < context
+        let zero = Tensor::new(0f32, device)?.broadcast_as(delta.shape())?;
+        let ctx = Tensor::new(context as f32, device)?.broadcast_as(delta.shape())?;
+        let causal = delta.ge(&zero)?;  // delta >= 0
+        let windowed = delta.lt(&ctx)?; // delta < context
+        let mask = causal.mul(&windowed)?; // AND
+        // Reshape to [1, 1, seq, seq] for broadcasting with [batch, heads, seq, seq]
+        mask.unsqueeze(0)?.unsqueeze(0)
+    }
+
+    /// Forward with intermediate dumps for debugging
+    fn forward_with_dump(&self, x: &Tensor, rope: &crate::modules::rotary::RotaryEmbedding, dump_dir: &std::path::Path, layer_idx: usize) -> Result<Tensor> {
+        let (batch, seq, dim) = x.dims3()?;
+        let device = x.device();
+
+        // Self-attention
+        let h = self.norm1.forward(x)?;
+        MimiDecoder::dump_npy(dump_dir, &format!("rs_tr_L{}_norm1", layer_idx), &h)?;
+
+        let qkv = self.in_proj.forward(&h)?;
+        MimiDecoder::dump_npy(dump_dir, &format!("rs_tr_L{}_in_proj", layer_idx), &qkv)?;
+
+        let qkv = qkv.reshape((batch, seq, 3, self.num_heads, self.head_dim))?;
+        let qkv = qkv.permute((2, 0, 3, 1, 4))?; // [3, batch, heads, seq, head_dim]
+
+        let q = qkv.get(0)?;
+        let k = qkv.get(1)?;
+        let v = qkv.get(2)?;
+
+        MimiDecoder::dump_npy(dump_dir, &format!("rs_tr_L{}_q_pre_rope", layer_idx), &q)?;
+        MimiDecoder::dump_npy(dump_dir, &format!("rs_tr_L{}_k_pre_rope", layer_idx), &k)?;
+        MimiDecoder::dump_npy(dump_dir, &format!("rs_tr_L{}_v", layer_idx), &v)?;
+
+        // Apply RoPE to Q and K
+        let q = q.permute((0, 2, 1, 3))?; // [batch, seq, heads, head_dim]
+        let k = k.permute((0, 2, 1, 3))?;
+        let (q, k) = rope.forward(&q, &k, 0)?;
+        let q = q.permute((0, 2, 1, 3))?; // [batch, heads, seq, head_dim]
+        let k = k.permute((0, 2, 1, 3))?;
+
+        MimiDecoder::dump_npy(dump_dir, &format!("rs_tr_L{}_q_rope", layer_idx), &q)?;
+        MimiDecoder::dump_npy(dump_dir, &format!("rs_tr_L{}_k_rope", layer_idx), &k)?;
+
+        // Scaled dot-product attention with causal + context mask
+        let scale = (self.head_dim as f64).sqrt();
+        let attn = q.matmul(&k.transpose(2, 3)?)?;
+        let attn = (attn / scale)?;
+        MimiDecoder::dump_npy(dump_dir, &format!("rs_tr_L{}_attn_scores", layer_idx), &attn)?;
+
+        // Apply causal + context window mask
+        let mask = Self::build_causal_context_mask(seq, self.context, device)?;
+        let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?
+            .broadcast_as(attn.shape())?;
+        let attn = mask.broadcast_as(attn.shape())?.where_cond(&attn, &neg_inf)?;
+
+        let attn = candle_nn::ops::softmax(&attn, 3)?;
+        MimiDecoder::dump_npy(dump_dir, &format!("rs_tr_L{}_attn_probs", layer_idx), &attn)?;
+
+        let attn_out = attn.matmul(&v)?;
+        MimiDecoder::dump_npy(dump_dir, &format!("rs_tr_L{}_attn_out_raw", layer_idx), &attn_out)?;
+
+        let attn_out = attn_out.permute((0, 2, 1, 3))?;
+        let attn_out = attn_out.reshape((batch, seq, dim))?;
+        let attn_out = self.out_proj.forward(&attn_out)?;
+        MimiDecoder::dump_npy(dump_dir, &format!("rs_tr_L{}_attn_out_proj", layer_idx), &attn_out)?;
+
+        let attn_out = attn_out.broadcast_mul(&self.layer_scale_1)?;
+        let x = (x + attn_out)?;
+        MimiDecoder::dump_npy(dump_dir, &format!("rs_tr_L{}_post_attn", layer_idx), &x)?;
+
+        // FFN
+        let h = self.norm2.forward(&x)?;
+        let h = self.linear1.forward(&h)?;
+        let h = h.gelu_erf()?;
+        let h = self.linear2.forward(&h)?;
+        let h = h.broadcast_mul(&self.layer_scale_2)?;
+        let result = (x + h)?;
+        MimiDecoder::dump_npy(dump_dir, &format!("rs_tr_L{}_output", layer_idx), &result)?;
+
+        Ok(result)
+    }
+
+    /// Streaming forward with KV cache and context-windowed causal attention.
     ///
     /// Processes a chunk of input, caching K/V for future chunks.
-    /// This maintains causal attention context across streaming frames.
+    /// Uses causal attention with a context window matching Python's
+    /// MimiStreamingMultiheadAttention behavior.
     fn forward_streaming(&mut self, x: &Tensor, rope: &crate::modules::rotary::RotaryEmbedding) -> Result<Tensor> {
         let (batch, seq, dim) = x.dims3()?;
+        let device = x.device();
 
         // Get current cache length (for RoPE offset)
         let offset = self.k_cache.as_ref().map_or(0, |k| k.dim(2).unwrap_or(0));
@@ -547,16 +662,13 @@ impl DecoderTransformerLayer {
         let v = qkv.get(2)?;
 
         // Apply RoPE with correct offset
-        // Q, K are [batch, heads, seq, head_dim]
-        // RoPE expects [batch, seq, heads, head_dim]
         let q = q.permute((0, 2, 1, 3))?;
         let k = k.permute((0, 2, 1, 3))?;
         let (q, k) = rope.forward(&q, &k, offset)?;
-        // Permute back to [batch, heads, seq, head_dim]
         let q = q.permute((0, 2, 1, 3))?;
         let k = k.permute((0, 2, 1, 3))?;
 
-        // Update KV cache
+        // Update KV cache (append new K/V)
         let (k_full, v_full) = match (&self.k_cache, &self.v_cache) {
             (Some(k_cache), Some(v_cache)) => {
                 let k_new = Tensor::cat(&[k_cache, &k], 2)?;
@@ -565,19 +677,41 @@ impl DecoderTransformerLayer {
             },
             _ => (k, v.clone()),
         };
-        self.k_cache = Some(k_full.clone());
-        self.v_cache = Some(v_full.clone());
 
-        // Compute attention: Q attends to full K/V cache
-        // NOTE: Decoder transformer uses NON-CAUSAL (full) self-attention
-        // Each position can attend to ALL positions in the sequence
+        // Trim KV cache to context window to prevent unbounded growth
+        // and to match Python's circular buffer behavior
+        let cache_len = k_full.dim(2)?;
+        let (k_ctx, v_ctx) = if cache_len > self.context {
+            let start = cache_len - self.context;
+            (k_full.narrow(2, start, self.context)?, v_full.narrow(2, start, self.context)?)
+        } else {
+            (k_full.clone(), v_full.clone())
+        };
+        self.k_cache = Some(k_ctx.clone());
+        self.v_cache = Some(v_ctx.clone());
+
+        // Build causal + context mask for streaming
+        // Q positions: offset..offset+seq
+        // K positions: the positions stored in the (trimmed) cache
+        // For each query at absolute position q_pos, it can attend to
+        // key at absolute position k_pos if:
+        //   k_pos <= q_pos AND (q_pos - k_pos) < context
+        // Since we've already trimmed to context, we just need the causal part.
+        let kv_len = k_ctx.dim(2)?;
+        let mask = Self::build_streaming_causal_mask(seq, kv_len, offset, self.context, device)?;
+
+        // Compute attention
         let scale = (self.head_dim as f64).sqrt();
-        let attn = q.matmul(&k_full.transpose(2, 3)?)?;
+        let attn = q.matmul(&k_ctx.transpose(2, 3)?)?;
         let attn = (attn / scale)?;
 
-        // No causal mask - full attention (decoder transformer is non-causal)
+        // Apply mask
+        let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?
+            .broadcast_as(attn.shape())?;
+        let attn = mask.broadcast_as(attn.shape())?.where_cond(&attn, &neg_inf)?;
+
         let attn = candle_nn::ops::softmax(&attn, 3)?;
-        let attn_out = attn.matmul(&v_full)?;
+        let attn_out = attn.matmul(&v_ctx)?;
 
         // Reshape back
         let attn_out = attn_out.permute((0, 2, 1, 3))?;
@@ -588,7 +722,7 @@ impl DecoderTransformerLayer {
         let attn_out = attn_out.broadcast_mul(&self.layer_scale_1)?;
         let x = (x + attn_out)?;
 
-        // FFN (same as batch)
+        // FFN
         let h = self.norm2.forward(&x)?;
         let h = self.linear1.forward(&h)?;
         let h = h.gelu_erf()?;
@@ -596,6 +730,38 @@ impl DecoderTransformerLayer {
 
         let h = h.broadcast_mul(&self.layer_scale_2)?;
         x + h
+    }
+
+    /// Build causal mask for streaming attention.
+    /// Q has positions [offset..offset+q_len), K has positions stored in cache of length kv_len.
+    /// The cache stores the most recent kv_len positions, so K position j corresponds to
+    /// absolute position (offset + q_len - kv_len + j) if kv_len <= offset + q_len.
+    /// Mask: q_pos >= k_pos AND (q_pos - k_pos) < context
+    fn build_streaming_causal_mask(
+        q_len: usize, kv_len: usize, offset: usize, context: usize, device: &Device,
+    ) -> Result<Tensor> {
+        // Absolute positions of query tokens
+        let q_positions: Vec<f32> = (0..q_len).map(|i| (offset + i) as f32).collect();
+        let q_pos = Tensor::from_vec(q_positions, (q_len, 1), device)?;
+
+        // Absolute positions of key tokens in the cache
+        // After trimming, cache holds the last kv_len positions ending at offset + q_len - 1
+        let k_start = (offset + q_len).saturating_sub(kv_len);
+        let k_positions: Vec<f32> = (0..kv_len).map(|j| (k_start + j) as f32).collect();
+        let k_pos = Tensor::from_vec(k_positions, (1, kv_len), device)?;
+
+        // delta = q_pos - k_pos: [q_len, kv_len]
+        let delta = q_pos.broadcast_sub(&k_pos)?;
+
+        // mask: delta >= 0 AND delta < context
+        let zero = Tensor::new(0f32, device)?.broadcast_as(delta.shape())?;
+        let ctx = Tensor::new(context as f32, device)?.broadcast_as(delta.shape())?;
+        let causal = delta.ge(&zero)?;
+        let windowed = delta.lt(&ctx)?;
+        let mask = causal.mul(&windowed)?;
+
+        // [1, 1, q_len, kv_len]
+        mask.unsqueeze(0)?.unsqueeze(0)
     }
 
     /// Reset the KV cache
@@ -613,7 +779,7 @@ struct DecoderTransformer {
 }
 
 impl DecoderTransformer {
-    fn new(dim: usize, num_layers: usize, vb: VarBuilder) -> Result<Self> {
+    fn new(dim: usize, num_layers: usize, context: usize, vb: VarBuilder) -> Result<Self> {
         let num_heads = 8; // 512 / 64 = 8 heads
         let head_dim = dim / num_heads; // 64
         let device = vb.device();
@@ -632,6 +798,7 @@ impl DecoderTransformer {
             layers.push(DecoderTransformerLayer::new(
                 dim,
                 num_heads,
+                context,
                 vb.pp(format!("transformer.layers.{}", i)),
             )?);
         }
@@ -642,6 +809,15 @@ impl DecoderTransformer {
         let mut x = x.clone();
         for layer in &self.layers {
             x = layer.forward(&x, &self.rope)?;
+        }
+        Ok(x)
+    }
+
+    fn forward_with_dump(&self, x: &Tensor, dump_dir: &std::path::Path) -> Result<Tensor> {
+        MimiDecoder::dump_npy(dump_dir, "rs_tr_input", x)?;
+        let mut x = x.clone();
+        for (i, layer) in self.layers.iter().enumerate() {
+            x = layer.forward_with_dump(&x, &self.rope, dump_dir, i)?;
         }
         Ok(x)
     }
@@ -775,7 +951,7 @@ impl MimiDecoder {
 
         // Decoder transformer (2 layers)
         let decoder_transformer =
-            DecoderTransformer::new(config.mimi_dim, config.num_transformer_layers, vb.pp("decoder_transformer"))?;
+            DecoderTransformer::new(config.mimi_dim, config.num_transformer_layers, config.transformer_context, vb.pp("decoder_transformer"))?;
 
         // Depthwise 16x temporal upsampling
         // Weight path: upsample.convtr.convtr
@@ -1010,6 +1186,161 @@ impl MimiDecoder {
 
         // Squeeze channel dim: [batch, 1, samples] -> [batch, samples]
         audio.squeeze(1)
+    }
+
+    /// Decode with intermediate tensor dumps for diagnostics.
+    ///
+    /// Same architecture as `forward_streaming` (streaming upsample, batch transformer,
+    /// streaming SEANet) but saves per-block .npy files for the first `dump_frames` frames.
+    pub fn forward_streaming_with_dump(&self, latents: &Tensor, dump_dir: &std::path::Path, dump_frames: usize) -> Result<Tensor> {
+        let (batch, seq, _latent_dim) = latents.dims3()?;
+        let device = latents.device();
+
+        // Dump denormalized latents for Python comparison
+        Self::dump_npy(dump_dir, "rs_denorm_latents", latents)?;
+
+        // Step 1: Transpose and output_proj (batch)
+        let x = latents.transpose(1, 2)?;
+        let x = self.output_proj.forward(&x)?;
+
+        // Dump output_proj for first frame
+        if dump_frames > 0 {
+            Self::dump_npy(dump_dir, "rs_f0_output_proj", &x.narrow(2, 0, 1)?)?;
+        }
+
+        // Step 2: Streaming upsample
+        let mut upsample_state = StreamingConvTr1dState::new(
+            batch, self.config.mimi_dim, self.upsample_convtr.overlap(), device,
+        )?;
+        let mut upsampled_chunks: Vec<Tensor> = Vec::with_capacity(seq);
+        for frame_idx in 0..seq {
+            let frame = x.narrow(2, frame_idx, 1)?;
+            let upsampled = self.upsample_convtr.forward_streaming(&frame, &mut upsample_state)?;
+            if upsampled.dim(2)? > 0 {
+                if frame_idx < dump_frames {
+                    Self::dump_npy(dump_dir, &format!("rs_f{}_upsample", frame_idx), &upsampled)?;
+                }
+                upsampled_chunks.push(upsampled);
+            }
+        }
+
+        let x = if upsampled_chunks.is_empty() {
+            return Err(candle_core::Error::Msg("No upsampled frames".to_string()));
+        } else {
+            Tensor::cat(&upsampled_chunks, 2)?
+        };
+
+        // Step 3: Batch transformer (with sub-layer dumps)
+        let x = x.transpose(1, 2)?;
+        let x = self.decoder_transformer.forward_with_dump(&x, dump_dir)?;
+        let x = x.transpose(1, 2)?;
+
+        // Dump transformer output for first frames
+        for frame_idx in 0..dump_frames.min(seq) {
+            let start = frame_idx * 16;
+            if start + 16 <= x.dim(2)? {
+                Self::dump_npy(dump_dir, &format!("rs_f{}_dec_transformer", frame_idx), &x.narrow(2, start, 16)?)?;
+            }
+        }
+
+        // Step 4: Streaming SEANet
+        let mut seanet_state = self.init_seanet_state(batch, device)?;
+        let total_len = x.dim(2)?;
+        let chunk_size = 16;
+        let num_chunks = (total_len + chunk_size - 1) / chunk_size;
+
+        let mut audio_chunks: Vec<Tensor> = Vec::with_capacity(num_chunks);
+        for chunk_idx in 0..num_chunks {
+            let start = chunk_idx * chunk_size;
+            let len = usize::min(chunk_size, total_len - start);
+            let chunk = x.narrow(2, start, len)?;
+
+            // For first chunk, dump SEANet layer-by-layer
+            if chunk_idx < dump_frames {
+                let audio_chunk = self.seanet_forward_with_dump(&chunk, &mut seanet_state, dump_dir, chunk_idx)?;
+                if audio_chunk.dim(2)? > 0 {
+                    audio_chunks.push(audio_chunk);
+                }
+            } else {
+                let audio_chunk = self.seanet.forward_streaming(&chunk, &mut seanet_state)?;
+                if audio_chunk.dim(2)? > 0 {
+                    audio_chunks.push(audio_chunk);
+                }
+            }
+        }
+
+        let audio = if audio_chunks.is_empty() {
+            Tensor::zeros((batch, 1, 0), DType::F32, device)?
+        } else {
+            Tensor::cat(&audio_chunks, 2)?
+        };
+        audio.squeeze(1)
+    }
+
+    /// SEANet forward with per-layer dumps
+    fn seanet_forward_with_dump(&self, x: &Tensor, state: &mut StreamingSEANetState, dump_dir: &std::path::Path, frame_idx: usize) -> Result<Tensor> {
+        // Input conv (streaming)
+        let mut x = self.seanet.input_conv.forward_streaming(x, &mut state.input_conv_state)?;
+        Self::dump_npy(dump_dir, &format!("rs_f{}_seanet_00_StreamingConv1d", frame_idx), &x)?;
+
+        // ELU
+        x = x.elu(1.0)?;
+        Self::dump_npy(dump_dir, &format!("rs_f{}_seanet_01_ELU", frame_idx), &x)?;
+
+        // Upsample blocks: convtr, resblock, elu
+        for (i, (convtr, block)) in self.seanet.upsample_blocks.iter().enumerate() {
+            x = convtr.forward_streaming(&x, &mut state.convtr_states[i])?;
+            let layer_num = 2 + i * 3;
+            Self::dump_npy(dump_dir, &format!("rs_f{}_seanet_{:02}_StreamingConvTranspose1d", frame_idx, layer_num), &x)?;
+
+            if let Some(res_block) = block {
+                x = res_block.forward_streaming(&x, &mut state.resblock_states[i])?;
+            }
+            Self::dump_npy(dump_dir, &format!("rs_f{}_seanet_{:02}_SEANetResnetBlock", frame_idx, layer_num + 1), &x)?;
+
+            x = x.elu(1.0)?;
+            Self::dump_npy(dump_dir, &format!("rs_f{}_seanet_{:02}_ELU", frame_idx, layer_num + 2), &x)?;
+        }
+
+        // Output conv (streaming)
+        let x = self.seanet.output_conv.forward_streaming(&x, &mut state.output_conv_state)?;
+        Self::dump_npy(dump_dir, &format!("rs_f{}_seanet_11_StreamingConv1d", frame_idx), &x)?;
+
+        Ok(x)
+    }
+
+    /// Dump a tensor to .npy format for comparison with Python
+    fn dump_npy(dir: &std::path::Path, name: &str, tensor: &Tensor) -> Result<()> {
+        let flat: Vec<f32> = tensor.flatten_all()?.to_vec1()?;
+        let dims = tensor.dims();
+        let shape_str = dims.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(", ");
+
+        let path = dir.join(format!("{}.npy", name));
+
+        // NPY v1.0 format
+        let header = format!("{{'descr': '<f4', 'fortran_order': False, 'shape': ({},), }}", shape_str);
+        let prefix_len = 10;
+        let total_header_len = prefix_len + header.len() + 1;
+        let padding_needed = (64 - (total_header_len % 64)) % 64;
+        let padded_header_len = header.len() + padding_needed + 1;
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0x93, b'N', b'U', b'M', b'P', b'Y', 0x01, 0x00]);
+        buf.extend_from_slice(&(padded_header_len as u16).to_le_bytes());
+        buf.extend_from_slice(header.as_bytes());
+        for _ in 0..padding_needed {
+            buf.push(b' ');
+        }
+        buf.push(b'\n');
+        for val in &flat {
+            buf.extend_from_slice(&val.to_le_bytes());
+        }
+
+        std::fs::write(&path, &buf).map_err(|e| candle_core::Error::Msg(format!("Failed to write {}: {}", path.display(), e)))?;
+
+        let abs_max = flat.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+        eprintln!("[Mimi-Dump] {} {:?} abs_max={:.6}", name, dims, abs_max);
+        Ok(())
     }
 
     /// Initialize SEANet streaming state

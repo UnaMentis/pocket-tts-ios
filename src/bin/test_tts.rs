@@ -190,6 +190,7 @@ fn main() {
     let mut seed: Option<u32> = None;
     let mut noise_dir: Option<PathBuf> = None;
     let mut noise_phrase_id: String = "phrase_00".to_string();
+    let mut dump_mimi_dir: Option<PathBuf> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -290,6 +291,12 @@ fn main() {
                     i += 1;
                 }
             },
+            "--dump-mimi" => {
+                if i + 1 < args.len() {
+                    dump_mimi_dir = Some(PathBuf::from(&args[i + 1]));
+                    i += 1;
+                }
+            },
             "--help" | "-h" => {
                 print_usage();
                 return;
@@ -345,6 +352,7 @@ fn main() {
             &tts_config,
             noise_dir.as_deref(),
             &noise_phrase_id,
+            dump_mimi_dir.as_deref(),
         );
     }
 }
@@ -496,6 +504,7 @@ fn run_single_phrase(
     config: &TTSConfig,
     noise_dir: Option<&Path>,
     noise_phrase_id: &str,
+    dump_mimi_dir: Option<&Path>,
 ) {
     println!("Configuration:");
     println!("  Model directory: {}", model_dir.display());
@@ -534,7 +543,17 @@ fn run_single_phrase(
     println!("Synthesizing audio...");
     let start = Instant::now();
 
-    let (audio, latents_data, latent_shape) = if export_latents_path.is_some() {
+    let (audio, latents_data, latent_shape) = if let Some(dump_dir) = dump_mimi_dir {
+        // Use synthesize_with_mimi_dump to dump intermediates
+        println!("  Dumping Mimi intermediates to: {}", dump_dir.display());
+        match model.synthesize_with_mimi_dump(test_text, dump_dir, 2) {
+            Ok(a) => (a, None, None),
+            Err(e) => {
+                eprintln!("ERROR: Synthesis with dump failed: {:?}", e);
+                std::process::exit(1);
+            },
+        }
+    } else if export_latents_path.is_some() {
         // Use synthesize_with_latents to get both audio and latents
         match model.synthesize_with_latents(test_text) {
             Ok((a, l, s)) => (a, Some(l), Some(s)),
