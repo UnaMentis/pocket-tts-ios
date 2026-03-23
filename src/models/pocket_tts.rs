@@ -712,8 +712,7 @@ impl PocketTTSModel {
             .map_err(|e| PocketTTSError::InferenceFailed(format!("Denormalize: {}", e)))?;
 
         // Create dump directory
-        std::fs::create_dir_all(dump_dir)
-            .map_err(|e| PocketTTSError::InferenceFailed(format!("mkdir: {}", e)))?;
+        std::fs::create_dir_all(dump_dir).map_err(|e| PocketTTSError::InferenceFailed(format!("mkdir: {}", e)))?;
 
         // Decode with dump
         let audio = self

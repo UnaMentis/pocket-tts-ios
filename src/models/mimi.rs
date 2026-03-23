@@ -518,8 +518,7 @@ impl DecoderTransformerLayer {
         // mask[i][j] = true if i >= j AND (i - j) < context
         let mask = Self::build_causal_context_mask(seq, self.context, device)?;
         // Apply mask: where mask is false (should NOT attend), set to -inf
-        let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?
-            .broadcast_as(attn.shape())?;
+        let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?.broadcast_as(attn.shape())?;
         let attn = mask.broadcast_as(attn.shape())?.where_cond(&attn, &neg_inf)?;
 
         let attn = candle_nn::ops::softmax(&attn, 3)?;
@@ -560,15 +559,21 @@ impl DecoderTransformerLayer {
         // mask: delta >= 0 AND delta < context
         let zero = Tensor::new(0f32, device)?.broadcast_as(delta.shape())?;
         let ctx = Tensor::new(context as f32, device)?.broadcast_as(delta.shape())?;
-        let causal = delta.ge(&zero)?;  // delta >= 0
+        let causal = delta.ge(&zero)?; // delta >= 0
         let windowed = delta.lt(&ctx)?; // delta < context
         let mask = causal.mul(&windowed)?; // AND
-        // Reshape to [1, 1, seq, seq] for broadcasting with [batch, heads, seq, seq]
+                                           // Reshape to [1, 1, seq, seq] for broadcasting with [batch, heads, seq, seq]
         mask.unsqueeze(0)?.unsqueeze(0)
     }
 
     /// Forward with intermediate dumps for debugging
-    fn forward_with_dump(&self, x: &Tensor, rope: &crate::modules::rotary::RotaryEmbedding, dump_dir: &std::path::Path, layer_idx: usize) -> Result<Tensor> {
+    fn forward_with_dump(
+        &self,
+        x: &Tensor,
+        rope: &crate::modules::rotary::RotaryEmbedding,
+        dump_dir: &std::path::Path,
+        layer_idx: usize,
+    ) -> Result<Tensor> {
         let (batch, seq, dim) = x.dims3()?;
         let device = x.device();
 
@@ -608,8 +613,7 @@ impl DecoderTransformerLayer {
 
         // Apply causal + context window mask
         let mask = Self::build_causal_context_mask(seq, self.context, device)?;
-        let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?
-            .broadcast_as(attn.shape())?;
+        let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?.broadcast_as(attn.shape())?;
         let attn = mask.broadcast_as(attn.shape())?.where_cond(&attn, &neg_inf)?;
 
         let attn = candle_nn::ops::softmax(&attn, 3)?;
@@ -706,8 +710,7 @@ impl DecoderTransformerLayer {
         let attn = (attn / scale)?;
 
         // Apply mask
-        let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?
-            .broadcast_as(attn.shape())?;
+        let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?.broadcast_as(attn.shape())?;
         let attn = mask.broadcast_as(attn.shape())?.where_cond(&attn, &neg_inf)?;
 
         let attn = candle_nn::ops::softmax(&attn, 3)?;
@@ -738,7 +741,11 @@ impl DecoderTransformerLayer {
     /// absolute position (offset + q_len - kv_len + j) if kv_len <= offset + q_len.
     /// Mask: q_pos >= k_pos AND (q_pos - k_pos) < context
     fn build_streaming_causal_mask(
-        q_len: usize, kv_len: usize, offset: usize, context: usize, device: &Device,
+        q_len: usize,
+        kv_len: usize,
+        offset: usize,
+        context: usize,
+        device: &Device,
     ) -> Result<Tensor> {
         // Absolute positions of query tokens
         let q_positions: Vec<f32> = (0..q_len).map(|i| (offset + i) as f32).collect();
@@ -950,8 +957,12 @@ impl MimiDecoder {
         let output_proj = Conv1d::new_no_bias(config.latent_dim, config.mimi_dim, 1, vb.pp("quantizer.output_proj"))?;
 
         // Decoder transformer (2 layers)
-        let decoder_transformer =
-            DecoderTransformer::new(config.mimi_dim, config.num_transformer_layers, config.transformer_context, vb.pp("decoder_transformer"))?;
+        let decoder_transformer = DecoderTransformer::new(
+            config.mimi_dim,
+            config.num_transformer_layers,
+            config.transformer_context,
+            vb.pp("decoder_transformer"),
+        )?;
 
         // Depthwise 16x temporal upsampling
         // Weight path: upsample.convtr.convtr
@@ -1192,7 +1203,12 @@ impl MimiDecoder {
     ///
     /// Same architecture as `forward_streaming` (streaming upsample, batch transformer,
     /// streaming SEANet) but saves per-block .npy files for the first `dump_frames` frames.
-    pub fn forward_streaming_with_dump(&self, latents: &Tensor, dump_dir: &std::path::Path, dump_frames: usize) -> Result<Tensor> {
+    pub fn forward_streaming_with_dump(
+        &self,
+        latents: &Tensor,
+        dump_dir: &std::path::Path,
+        dump_frames: usize,
+    ) -> Result<Tensor> {
         let (batch, seq, _latent_dim) = latents.dims3()?;
         let device = latents.device();
 
@@ -1209,9 +1225,8 @@ impl MimiDecoder {
         }
 
         // Step 2: Streaming upsample
-        let mut upsample_state = StreamingConvTr1dState::new(
-            batch, self.config.mimi_dim, self.upsample_convtr.overlap(), device,
-        )?;
+        let mut upsample_state =
+            StreamingConvTr1dState::new(batch, self.config.mimi_dim, self.upsample_convtr.overlap(), device)?;
         let mut upsampled_chunks: Vec<Tensor> = Vec::with_capacity(seq);
         for frame_idx in 0..seq {
             let frame = x.narrow(2, frame_idx, 1)?;
@@ -1239,7 +1254,11 @@ impl MimiDecoder {
         for frame_idx in 0..dump_frames.min(seq) {
             let start = frame_idx * 16;
             if start + 16 <= x.dim(2)? {
-                Self::dump_npy(dump_dir, &format!("rs_f{}_dec_transformer", frame_idx), &x.narrow(2, start, 16)?)?;
+                Self::dump_npy(
+                    dump_dir,
+                    &format!("rs_f{}_dec_transformer", frame_idx),
+                    &x.narrow(2, start, 16)?,
+                )?;
             }
         }
 
@@ -1278,7 +1297,13 @@ impl MimiDecoder {
     }
 
     /// SEANet forward with per-layer dumps
-    fn seanet_forward_with_dump(&self, x: &Tensor, state: &mut StreamingSEANetState, dump_dir: &std::path::Path, frame_idx: usize) -> Result<Tensor> {
+    fn seanet_forward_with_dump(
+        &self,
+        x: &Tensor,
+        state: &mut StreamingSEANetState,
+        dump_dir: &std::path::Path,
+        frame_idx: usize,
+    ) -> Result<Tensor> {
         // Input conv (streaming)
         let mut x = self.seanet.input_conv.forward_streaming(x, &mut state.input_conv_state)?;
         Self::dump_npy(dump_dir, &format!("rs_f{}_seanet_00_StreamingConv1d", frame_idx), &x)?;
@@ -1291,12 +1316,20 @@ impl MimiDecoder {
         for (i, (convtr, block)) in self.seanet.upsample_blocks.iter().enumerate() {
             x = convtr.forward_streaming(&x, &mut state.convtr_states[i])?;
             let layer_num = 2 + i * 3;
-            Self::dump_npy(dump_dir, &format!("rs_f{}_seanet_{:02}_StreamingConvTranspose1d", frame_idx, layer_num), &x)?;
+            Self::dump_npy(
+                dump_dir,
+                &format!("rs_f{}_seanet_{:02}_StreamingConvTranspose1d", frame_idx, layer_num),
+                &x,
+            )?;
 
             if let Some(res_block) = block {
                 x = res_block.forward_streaming(&x, &mut state.resblock_states[i])?;
             }
-            Self::dump_npy(dump_dir, &format!("rs_f{}_seanet_{:02}_SEANetResnetBlock", frame_idx, layer_num + 1), &x)?;
+            Self::dump_npy(
+                dump_dir,
+                &format!("rs_f{}_seanet_{:02}_SEANetResnetBlock", frame_idx, layer_num + 1),
+                &x,
+            )?;
 
             x = x.elu(1.0)?;
             Self::dump_npy(dump_dir, &format!("rs_f{}_seanet_{:02}_ELU", frame_idx, layer_num + 2), &x)?;
@@ -1328,15 +1361,14 @@ impl MimiDecoder {
         buf.extend_from_slice(&[0x93, b'N', b'U', b'M', b'P', b'Y', 0x01, 0x00]);
         buf.extend_from_slice(&(padded_header_len as u16).to_le_bytes());
         buf.extend_from_slice(header.as_bytes());
-        for _ in 0..padding_needed {
-            buf.push(b' ');
-        }
+        buf.extend(std::iter::repeat_n(b' ', padding_needed));
         buf.push(b'\n');
         for val in &flat {
             buf.extend_from_slice(&val.to_le_bytes());
         }
 
-        std::fs::write(&path, &buf).map_err(|e| candle_core::Error::Msg(format!("Failed to write {}: {}", path.display(), e)))?;
+        std::fs::write(&path, &buf)
+            .map_err(|e| candle_core::Error::Msg(format!("Failed to write {}: {}", path.display(), e)))?;
 
         let abs_max = flat.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
         eprintln!("[Mimi-Dump] {} {:?} abs_max={:.6}", name, dims, abs_max);
