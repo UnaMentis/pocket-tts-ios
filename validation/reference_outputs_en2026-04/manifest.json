@@ -1,0 +1,73 @@
+{
+  "model_version": "official_pocket_tts",
+  "sample_rate": 24000,
+  "voice": "alba",
+  "seed": 42,
+  "noise_captured": true,
+  "phrases": [
+    {
+      "id": "phrase_00",
+      "text": "Hello, this is a test of the Pocket TTS system.",
+      "wav_file": "phrase_00.wav",
+      "npy_file": "phrase_00_audio.npy",
+      "audio_stats": {
+        "samples": 61440,
+        "duration_sec": 2.56,
+        "max_amplitude": 0.766414999961853,
+        "mean_amplitude": 0.07813606411218643,
+        "rms": 0.1237158328294754,
+        "dc_offset": 0.00014399868086911738
+      },
+      "noise_tensors": 34,
+      "noise_dir": "noise"
+    },
+    {
+      "id": "phrase_01",
+      "text": "The quick brown fox jumps over the lazy dog.",
+      "wav_file": "phrase_01.wav",
+      "npy_file": "phrase_01_audio.npy",
+      "audio_stats": {
+        "samples": 67200,
+        "duration_sec": 2.8,
+        "max_amplitude": 0.6249300241470337,
+        "mean_amplitude": 0.0792376697063446,
+        "rms": 0.12280953675508499,
+        "dc_offset": 3.7291825719876215e-05
+      },
+      "noise_tensors": 37,
+      "noise_dir": "noise"
+    },
+    {
+      "id": "phrase_02",
+      "text": "One two three four five six seven eight nine ten.",
+      "wav_file": "phrase_02.wav",
+      "npy_file": "phrase_02_audio.npy",
+      "audio_stats": {
+        "samples": 63360,
+        "duration_sec": 2.64,
+        "max_amplitude": 0.5539765954017639,
+        "mean_amplitude": 0.09293635934591293,
+        "rms": 0.14201262593269348,
+        "dc_offset": -3.4652198337425943e-06
+      },
+      "noise_tensors": 35,
+      "noise_dir": "noise"
+    },
+    {
+      "id": "phrase_03",
+      "text": "How are you doing today?",
+      "wav_file": "phrase_03.wav",
+      "npy_file": "phrase_03_audio.npy",
+      "audio_stats": {
+        "samples": 26880,
+        "duration_sec": 1.12,
+        "max_amplitude": 0.4734198749065399,
+        "mean_amplitude": 0.09120015054941177,
+        "rms": 0.13548123836517334,
+        "dc_offset": 6.602472421946004e-05
+      },
+      "noise_tensors": 16,
+      "noise_dir": "noise"
+    }
+  ]
+}

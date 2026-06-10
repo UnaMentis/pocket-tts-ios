@@ -120,6 +120,61 @@ impl PocketTTSEngine {
         result
     }
 
+    /// Noise-matched synthesis for on-device validation (the project's standard parity check).
+    ///
+    /// Loads the captured Python noise tensors for `phrase_id` from `noise_dir`
+    /// (`{phrase_id}_noise_step_NNN.npy`), forces the validation settings (consistency-steps = 1,
+    /// fixed seed), synthesizes, then restores the prior config and clears the noise. With the same
+    /// noise + seed as the reference, the resulting waveform reproduces the reference (correlation
+    /// ~1.0) — unlike `synthesize`, which samples fresh random noise each call.
+    pub fn synthesize_noise_matched(
+        &self,
+        text: String,
+        voice_index: u32,
+        noise_dir: String,
+        phrase_id: String,
+        seed: u32,
+    ) -> Result<SynthesisResult, PocketTTSError> {
+        let mut model_guard = self
+            .model
+            .lock()
+            .map_err(|_| PocketTTSError::InferenceFailed("Lock error".into()))?;
+        let model = model_guard.as_mut().ok_or(PocketTTSError::ModelNotLoaded)?;
+
+        // Save and apply validation config (restored before returning).
+        let saved = self.config.lock().unwrap().clone();
+        let mut cfg = saved.clone();
+        cfg.voice_index = voice_index;
+        cfg.use_fixed_seed = true;
+        cfg.seed = seed;
+        cfg.consistency_steps = 1;
+        model.configure(cfg)?;
+
+        let count = model.load_noise_tensors(std::path::Path::new(&noise_dir), &phrase_id)?;
+        if count == 0 {
+            let _ = model.configure(saved);
+            return Err(PocketTTSError::IoError(format!(
+                "No noise tensors found for '{}' in {}",
+                phrase_id, noise_dir
+            )));
+        }
+
+        let synth = model.synthesize(&text);
+        model.clear_noise_tensors();
+        let _ = model.configure(saved); // best-effort restore
+
+        let samples = synth?;
+        let wav_data = audio::samples_to_wav(&samples, model.sample_rate())?;
+        let duration = audio::duration_seconds(samples.len(), model.sample_rate());
+
+        Ok(SynthesisResult {
+            audio_data: wav_data,
+            sample_rate: model.sample_rate(),
+            channels: 1,
+            duration_seconds: duration,
+        })
+    }
+
     /// Start true streaming synthesis with optimized TTFA
     ///
     /// Unlike `start_streaming` which chunks by tokens, this method:

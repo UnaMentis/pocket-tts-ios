@@ -91,7 +91,8 @@ class NoiseCapture:
 
 def generate_reference_outputs(output_dir: Path, voice: str = "alba",
                                 seed: Optional[int] = None,
-                                capture_noise: bool = False) -> dict:
+                                capture_noise: bool = False,
+                                language: Optional[str] = None) -> dict:
     """Generate reference audio and latents using official Pocket TTS.
 
     Args:
@@ -99,12 +100,18 @@ def generate_reference_outputs(output_dir: Path, voice: str = "alba",
         voice: Voice name to use
         seed: If set, seed PyTorch RNG before each phrase for deterministic noise
         capture_noise: If True, capture FlowNet noise tensors as .npy files
+        language: If set, select a specific model/language (v2.x+ only, e.g.
+            "english_2026-04", "italian"). If None, loads the package default.
     """
     import torch
     from pocket_tts import TTSModel
 
-    print("Loading Pocket TTS model...")
-    model = TTSModel.load_model()
+    if language:
+        print(f"Loading Pocket TTS model (language={language})...")
+        model = TTSModel.load_model(language=language)
+    else:
+        print("Loading Pocket TTS model (default)...")
+        model = TTSModel.load_model()
     print(f"  Sample rate: {model.sample_rate} Hz")
 
     if seed is not None:
@@ -266,6 +273,13 @@ def main():
         action="store_true",
         help="Regenerate outputs even if they exist"
     )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default=None,
+        help="Model/language to load (v2.x+ only), e.g. 'english_2026-04', 'italian'. "
+             "If omitted, loads the package default model."
+    )
 
     args = parser.parse_args()
 
@@ -293,6 +307,7 @@ def main():
         args.output_dir, args.voice,
         seed=args.seed,
         capture_noise=args.capture_noise,
+        language=args.language,
     )
 
     # Optionally run Whisper

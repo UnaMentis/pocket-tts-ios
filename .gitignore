@@ -3,7 +3,7 @@
 
 # Model files (downloaded via scripts/download-model.py)
 /models/
-/kyutai-pocket-ios/
+/kyutai-pocket-ios*/
 
 # Cargo lock (optional - some prefer to track this)
 # Cargo.lock
@@ -35,9 +35,12 @@ validation/denormalized_latents.*
 validation/python_*.npy
 validation/stage_*
 validation/venv/
+validation/*_test_output.wav
+validation/test_output.wav
+validation/run1_rust.wav
 
 # iOS Test Harness - generated/downloaded by setup.sh
-tests/ios-harness/PocketTTS-v0.4.0/
+tests/ios-harness/PocketTTS-v*/
 tests/ios-harness/*.zip
 tests/ios-harness/PocketTTSDemo/Frameworks/
 tests/ios-harness/PocketTTSDemo/PocketTTSDemo/Models/

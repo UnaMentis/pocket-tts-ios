@@ -164,6 +164,17 @@ impl KVCache {
         self.k_cache = None;
         self.v_cache = None;
     }
+
+    /// Preload the cache with a precomputed state (e.g. a saved voice KV state).
+    ///
+    /// `k` and `v` must already be in the cache layout `[batch, num_heads, seq, head_dim]`
+    /// and (for `k`) post-RoPE, matching what `update()` stores. Subsequent `update()` calls
+    /// append along the sequence dimension, and `seq_len()` reflects the preloaded length so
+    /// RoPE offsets for following tokens continue from here.
+    pub fn set(&mut self, k: Tensor, v: Tensor) {
+        self.k_cache = Some(k);
+        self.v_cache = Some(v);
+    }
 }
 
 impl Default for KVCache {

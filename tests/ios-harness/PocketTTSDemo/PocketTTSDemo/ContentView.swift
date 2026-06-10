@@ -15,13 +15,13 @@ struct ContentView: View {
                 }
                 .tag(0)
 
-            // Reference Testing Tab
+            // Audio Comparison Tab
             NavigationStack {
                 ReferenceTestView(viewModel: referenceTestVM)
-                    .navigationTitle("AB Testing")
+                    .navigationTitle("Audio Compare")
             }
             .tabItem {
-                Label("AB Test", systemImage: "a.magnify")
+                Label("Compare", systemImage: "waveform.badge.magnifyingglass")
             }
             .tag(1)
         }

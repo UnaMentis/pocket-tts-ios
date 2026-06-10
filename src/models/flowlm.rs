@@ -352,33 +352,50 @@ impl FlowLM {
         // This matches Python's get_state_for_audio_prompt() which runs voice through
         // transformer BEFORE text to populate KV cache with voice context
         if let Some(voice) = voice_embedding {
-            let voice_emb = voice.embedding().unsqueeze(0)?;
-            let voice_emb = voice_emb.broadcast_as((batch_size, voice_emb.dim(1)?, voice_emb.dim(2)?))?;
-
-            eprintln!("[FlowLM] Phase 1: Processing voice embeddings");
-            eprintln!("[FlowLM] voice embedding shape: {:?}", voice_emb.dims());
-
-            // Diagnostic: Check voice embedding stats
-            let v_flat: Vec<f32> = voice_emb.flatten_all()?.to_vec1()?;
-            let v_mean = v_flat.iter().sum::<f32>() / v_flat.len() as f32;
-            let v_std = (v_flat.iter().map(|x| (x - v_mean).powi(2)).sum::<f32>() / v_flat.len() as f32).sqrt();
-            eprintln!("[FlowLM] voice emb: mean={:.6}, std={:.4}", v_mean, v_std);
-
-            // Run voice through transformer (populates KV cache positions 0-124)
-            let mut hidden = voice_emb;
-            for (i, layer) in self.layers.iter().enumerate() {
-                hidden = layer.forward(&hidden, &self.rotary, Some(&mut self.kv_caches[i]), None)?;
-                // Diagnostic: Check hidden stats after each layer
-                if i == 0 || i == 5 {
-                    let h_flat: Vec<f32> = hidden.flatten_all()?.to_vec1()?;
-                    let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
-                    let h_std = (h_flat.iter().map(|x| (x - h_mean).powi(2)).sum::<f32>() / h_flat.len() as f32).sqrt();
-                    eprintln!("[FlowLM] after layer {}: mean={:.6}, std={:.4}", i, h_mean, h_std);
+            if let Some(state) = voice.kv_state() {
+                // Pocket TTS v2 voice format: the voice ships as a precomputed self-attention
+                // KV cache (bos_before_voice + speaker projection baked in offline). Load it
+                // directly into each layer instead of running an embedding through the transformer.
+                for (i, (k, v)) in state.layers.iter().enumerate() {
+                    if i < self.kv_caches.len() {
+                        self.kv_caches[i].set(k.clone(), v.clone());
+                    }
                 }
-            }
-            let _ = self.final_norm.forward(&hidden)?;
+                eprintln!(
+                    "[FlowLM] Phase 1: loaded v2 voice KV state ({} layers, {} positions)",
+                    state.layers.len(),
+                    self.cache_seq_len()
+                );
+            } else {
+                let voice_emb = voice.embedding().unsqueeze(0)?;
+                let voice_emb = voice_emb.broadcast_as((batch_size, voice_emb.dim(1)?, voice_emb.dim(2)?))?;
 
-            eprintln!("[FlowLM] Voice processed, KV cache size: {}", self.cache_seq_len());
+                eprintln!("[FlowLM] Phase 1: Processing voice embeddings");
+                eprintln!("[FlowLM] voice embedding shape: {:?}", voice_emb.dims());
+
+                // Diagnostic: Check voice embedding stats
+                let v_flat: Vec<f32> = voice_emb.flatten_all()?.to_vec1()?;
+                let v_mean = v_flat.iter().sum::<f32>() / v_flat.len() as f32;
+                let v_std = (v_flat.iter().map(|x| (x - v_mean).powi(2)).sum::<f32>() / v_flat.len() as f32).sqrt();
+                eprintln!("[FlowLM] voice emb: mean={:.6}, std={:.4}", v_mean, v_std);
+
+                // Run voice through transformer (populates KV cache positions 0-124)
+                let mut hidden = voice_emb;
+                for (i, layer) in self.layers.iter().enumerate() {
+                    hidden = layer.forward(&hidden, &self.rotary, Some(&mut self.kv_caches[i]), None)?;
+                    // Diagnostic: Check hidden stats after each layer
+                    if i == 0 || i == 5 {
+                        let h_flat: Vec<f32> = hidden.flatten_all()?.to_vec1()?;
+                        let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
+                        let h_std =
+                            (h_flat.iter().map(|x| (x - h_mean).powi(2)).sum::<f32>() / h_flat.len() as f32).sqrt();
+                        eprintln!("[FlowLM] after layer {}: mean={:.6}, std={:.4}", i, h_mean, h_std);
+                    }
+                }
+                let _ = self.final_norm.forward(&hidden)?;
+
+                eprintln!("[FlowLM] Voice processed, KV cache size: {}", self.cache_seq_len());
+            }
         }
 
         // Phase 2: Process text embeddings (appends to KV cache)

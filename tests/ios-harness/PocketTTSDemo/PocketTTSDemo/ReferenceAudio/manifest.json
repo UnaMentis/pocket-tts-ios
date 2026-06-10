@@ -2,39 +2,48 @@
   "sample_rate": 24000,
   "format": "Int16 PCM WAV (iOS compatible)",
   "voice": "alba",
-  "note": "Generated using actual Python TTS pipeline - REAL SPEECH",
+  "model": "english_2026-04",
+  "note": "Generated using actual Python TTS pipeline (v2) - REAL SPEECH | noise-matched validation enabled (per-phrase captured noise + seed)",
   "phrases": [
     {
       "id": "short",
       "text": "Hello, this is a test of the Pocket TTS system.",
       "description": "TTS output for: Hello, this is a test of the P...",
       "audio_file": "reference_short_int16.wav",
-      "samples": 86400,
-      "duration_sec": 3.6
+      "samples": 61440,
+      "duration_sec": 2.56,
+      "noise_id": "phrase_00",
+      "seed": 42
     },
     {
       "id": "medium",
       "text": "The quick brown fox jumps over the lazy dog.",
       "description": "TTS output for: The quick brown fox jumps over...",
       "audio_file": "reference_medium_int16.wav",
-      "samples": 88320,
-      "duration_sec": 3.68
+      "samples": 67200,
+      "duration_sec": 2.8,
+      "noise_id": "phrase_01",
+      "seed": 43
     },
     {
       "id": "numbers",
       "text": "One two three four five six seven eight nine ten.",
       "description": "TTS output for: One two three four five six se...",
       "audio_file": "reference_numbers_int16.wav",
-      "samples": 59520,
-      "duration_sec": 2.48
+      "samples": 63360,
+      "duration_sec": 2.64,
+      "noise_id": "phrase_02",
+      "seed": 44
     },
     {
       "id": "question",
       "text": "How are you doing today?",
       "description": "TTS output for: How are you doing today?...",
       "audio_file": "reference_question_int16.wav",
-      "samples": 32640,
-      "duration_sec": 1.36
+      "samples": 26880,
+      "duration_sec": 1.12,
+      "noise_id": "phrase_03",
+      "seed": 45
     }
   ]
 }
