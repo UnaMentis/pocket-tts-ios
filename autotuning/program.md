@@ -253,7 +253,7 @@ Components:
 
 **Strategy**: Target the component with the lowest normalized score AND highest weight.
 
-**CRITICAL**: Correlation is THE primary metric (50% weight). With noise-matched testing (`--noise-dir`), correlation = 0.839 as of 2026-03-21. The entire remaining gap is in the **Mimi decoder** — transformer and FlowNet match Python perfectly. Always use noise-matched testing for evaluation.
+**CRITICAL**: Correlation is THE primary metric (50% weight). With noise-matched testing (`--noise-dir`), correlation = **1.000** since the 2026-03-21 Mimi decoder causal+context mask fix (re-confirmed 2026-06-11 on all 4 phrases for both v1 and v2). Any drop below 1.000 is a regression. Always use noise-matched testing for evaluation.
 
 ## Self-Improvement Protocol
 

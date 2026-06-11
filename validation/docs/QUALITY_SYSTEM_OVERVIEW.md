@@ -242,7 +242,7 @@ We don't just implement metrics - we **validate them** through a rigorous 4-run 
 ./establish_baseline.sh
 ```
 
-This creates `baselines/baseline_v0.4.1.json` containing validated metrics.
+This creates `baselines/baseline_v0.5.0.json` containing validated metrics.
 
 ## Files and Structure
 

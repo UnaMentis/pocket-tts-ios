@@ -251,7 +251,7 @@ python quality_metrics.py \
   --reference python_ref.wav \
   --rust rust_output.wav \
   --text "Hello, this is a test." \
-  --baseline validation/baselines/baseline_v0.4.1.json \
+  --baseline validation/baselines/baseline_v0.5.0.json \
   --check-regression
 ```
 

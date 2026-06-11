@@ -371,32 +371,29 @@ Each fix was documented in `PORTING_STATUS.md` with before/after metrics, creati
 
 ## What's Next
 
-The architecture is verified correct. **All latents match Python exactly (cosine similarity = 1.0).** The Mimi decoder streaming implementation is complete and working. The remaining work focuses on EOS detection refinement:
+*(Updated June 2026. An earlier version of this section described EOS
+detection divergence for longer phrases as the primary blocker—that was
+resolved in March 2026 along the way to 1.000 correlation; the full story is
+told in the later chapters.)*
 
-### Primary Blocker: EOS Detection for Longer Phrases
+The port is complete and verified: **noise-matched waveform correlation =
+1.000000 on all 4 canonical phrases, for both the v1 and v2 models.** The
+roadmap from here:
 
-For phrases longer than ~17 tokens, Rust detects end-of-speech earlier than Python:
-- **Root cause**: Numerical precision accumulation over many transformer forward passes
-- **Impact**: Medium phrases (~50 tokens) generate 21 fewer frames (~1.7 seconds shorter)
-- **Workaround available**: Short phrases work excellently; longer content can be chunked at application layer
+### Next: Multilingual (branch `feature/multilingual-v2`)
 
-### Recommended Investigation Path
+Upstream's v2 line includes italian, german, spanish, and portuguese models—
+all 6-layer and dimension-identical to `english_2026-04`. The port is a
+per-language weight/tokenizer/voice swap plus validation, holding each
+language to the same 1.000 correlation bar. Not part of v0.5.0.
 
-1. **Log EOS trajectories** - Compare step-by-step EOS logits between Rust and Python
-2. **Identify divergence point** - Linear drift vs sudden jump indicates different root causes
-3. **Apply targeted precision fixes** - Force Float32 in attention operations if needed
-4. **Fallback option** - Accept short-phrase optimization for iOS (notifications, UI feedback)
+### Then: Performance
 
-### Practical Capabilities Today
+- **int8 quantization**
+- **Transformer fusion** from upstream v2
 
-| Feature | Status |
-|---------|--------|
-| Short phrases (<5s) | ✅ 0.81 correlation |
-| Medium phrases (5-15s) | ✅ Working, intelligible |
-| Long paragraphs (15-25s) | ✅ Working, up to 284 latent frames |
-| Very long content (>40s) | ⚠️ Requires chunking (max ~512 latents) |
-
-The implementation is **production-ready for iOS use cases** that primarily involve short to medium utterances.
+Each optimization must re-pass the parity gate (1.000 × 4 phrases × both
+models) before it lands. Speed never comes at the cost of correctness.
 
 ---
 
@@ -460,7 +457,7 @@ The implementation is **production-ready for iOS use cases** that primarily invo
 
 ---
 
-### v0.4.1: Streaming Quality Fixes & API Cleanup (January 27, 2025)
+### v0.4.1: Streaming Quality Fixes & API Cleanup (January 27, 2026)
 
 Following user reports that streaming mode sounded "wonky" compared to sync mode, investigation revealed three issues:
 
@@ -641,4 +638,151 @@ This project also produced a reusable multi-agent collaboration pattern document
 
 ---
 
-*This document captures the story of the project as of 2026-03-13. For current technical status, see [PORTING_STATUS.md](../PORTING_STATUS.md). For Python reference documentation, see [docs/python-reference/](python-reference/). For agent prompts, see [docs/prompts/](prompts/). For audit reports, see [docs/audit/](audit/). For quality infrastructure, see [docs/quality/](quality/). For changelog, see [CHANGELOG.md](../CHANGELOG.md).*
+## Perfect Correlation and the v2 Era (March–June 2026)
+
+The previous chapter ended with a plan: capture Python's noise tensors, load
+them in Rust, and let correlation measure pure implementation fidelity again.
+The plan worked faster than anyone expected.
+
+### The Payoff
+
+On March 18, the noise capture revealed its own bug: an off-by-one. Python's
+`generate_audio()` makes a text-prompting FlowNet call whose output is
+discarded—but whose noise was captured as `noise_step_000.npy`. Rust was
+consuming it for real. Skipping it (`noise_tensors[step + 1]`) took
+correlation from ~0 to **0.839** in a single change.
+
+Three days later, per-layer tensor dumps isolated the remaining 16% to the
+Mimi decoder's transformer: Rust was running full bidirectional attention
+where Python applies a **causal mask with a 250-position context window**.
+One mask function later, on March 21:
+
+**Correlation = 1.000.**
+
+The mission statement from the first page of this document—near-identical
+waveform output—was no longer aspirational. The Rust port and the Python
+reference now produce the same waveform.
+
+### Upstream Ships v2
+
+Then Kyutai moved. Upstream Pocket TTS released v2.0.0 and v2.1.0, headlined
+by a new English model: `english_2026-04`, distributed from a gated
+Hugging Face repo (`kyutai/pocket-tts`). It mattered for three reasons.
+First, it's the current generation—the model upstream actually maintains.
+Second, it's the foundation of a whole family: italian, german, spanish, and
+portuguese variants, all 6-layer and dimension-identical to the English
+model. Third—and this only became clear during the port—its voice files
+change the latency story entirely.
+
+A port that had just achieved perfection on `english_2026-01` now faced the
+question every porting project dreads: how much of this do we have to do
+again?
+
+### The KV-State Discovery
+
+The central discovery of the v2 migration: **v2 voice files are not
+embeddings—they're precomputed transformer state.**
+
+A v1 voice file holds an embedding sequence (`audio_prompt`, shape
+`[1, seq, 1024]`) that the engine must run through the transformer—a
+125-position prompt—before the first syllable is generated. A v2 voice file
+holds the *result* of that work: per-layer KV-states
+(`transformer.layers.{i}.self_attn/cache`) with the new `bos_before_voice`
+token ordering and the speaker projection already baked in by upstream's
+export.
+
+This collapsed the migration. Instead of reimplementing `bos_before_voice`
+sequencing and the speaker projection in Rust, the port just loads the
+precomputed state into the KV cache and starts generating. The decode path
+needed no changes at all. The entire v2 port came to **~240 surgical
+lines**—a loader that detects either voice format (and fails with a clear
+error on anything else), plus the plumbing to prime the cache.
+
+As a bonus, the architecture delta explained itself in the latency numbers:
+v1 must chew through its voice prompt at synthesis start (252ms average
+TTFA); v2 preloads the KV-states and answers in **137ms**.
+
+### 1.000, Again
+
+The parity bar didn't move for v2: noise-matched correlation, all four
+canonical phrases, no excuses. The same harness that validated v1 was run
+against `english_2026-04`—and after the migration settled, the gate read
+**1.000000 on all 4 phrases, for both v1 and v2**, with per-frame minima
+above 0.998 and output length exactly matching the reference
+(raw artifact: `docs/audit/correlation-v0.5.0-2026-06-11.txt`).
+
+And for the first time, the gate runs **on-device** too. The iOS demo gained
+a **Compare tab**: a 3-way comparison of the Python reference, the saved
+release baseline, and the current build, using on-device noise-matched
+synthesis via noise tensors bundled in the app (`ReferenceAudio/noise/`). On
+the simulator it reads 1.0000 on all 4 phrases—the same perfection,
+verified where users actually run the code.
+
+### The June Push: Becoming Releasable
+
+Perfect correlation made the project *correct*. June was about making it
+*shippable*. A full release-readiness audit kicked it off, and the findings
+drove a cleanup campaign with several stories worth telling.
+
+**The history rewrite.** The audit found the repository itself carrying
+debugging-era baggage: a 121MB Python venv accidentally committed, a stale
+XCFramework checked in, and debug tensor dumps fossilized in history. A
+clone cost ~190MB. On June 10 the history was rewritten to purge them—the
+repo now clones at ~15MB. The cost: anyone with an old clone must re-clone
+(not pull); GitHub issue #2 carries the notice. Release zips for v0.4.x were
+unaffected.
+
+**The great instrumentation cleanup.** The debugging philosophy from day one
+was "instrument everything"—and it worked, but the bill came due. Roughly 85
+print statements were still sitting in the synthesis hot path, and they were
+the reason January's latency measurements looked so grim (~1040ms average
+TTFA—a number now formally obsolete). With the instrumentation removed, TTFA
+dropped to **137ms average**. The library is now silent by default
+(one-shot messages behind `log::debug`), and the `.npy` dump tooling lives
+behind a `diagnostics` cargo feature—the instrumentation isn't gone, it's
+just opt-in.
+
+**The bug the tests didn't catch.** A line-by-line read of the release diff
+found that the streaming path never loaded v2 KV-state voices—sync synthesis
+was conditioned on the voice, streaming was not. The fix made voice
+conditioning shared between the sync and streaming paths. The lesson is an
+old one: parity gates exercise the path they exercise. Reading the diff is
+still a validation technique.
+
+**The phrase_02 mystery.** The 2026-03-19 baseline had one blemish:
+phrase_02 correlated at 0.011 while its siblings sat near 1.0. It looked
+like a real divergence and resisted explanation for weeks—until the harness
+itself was audited. `run_baseline.sh` was synthesizing a *different sentence*
+than the reference audio for phrase_02. The implementation was never wrong;
+the harness was comparing two different utterances. Fixed June 11:
+phrase_02 = 1.000000. Validate the validator.
+
+**Fail loud, never guess.** The cleanup hardened the loaders with the
+philosophy the debugging months taught: weight loading now asserts tensor
+shapes and fails fast with clear errors on incompatible models; voice files
+are format- and dimension-checked; and noise-matched generation is fully
+deterministic—12 repeated runs produce byte-identical output—and will error
+rather than silently fall back to RNG noise. Silent fallbacks are how a
+0.011 hides in a sea of 1.000s.
+
+The result shipped as **v0.5.0**: 95 unit tests passing, clippy clean under
+`-D warnings`, both the default and `--features diagnostics` builds green,
+and the parity gate at 1.000000 × 4 phrases × 2 models—on the host and on
+the device.
+
+**The correlation journey, complete:**
+
+| Milestone | Correlation | Date |
+|-----------|-------------|------|
+| Initial attempt | 0.0016 | January 2026 |
+| v0.4.0 Beta (peak, pre-noise) | 0.81 | January 24, 2026 |
+| Noise enabled, metric "closed" | ~0.0 | January 27, 2026 |
+| Course correction | — | March 13, 2026 |
+| Noise off-by-one fix | 0.839 | March 18, 2026 |
+| **Mimi causal+context mask** | **1.000** | **March 21, 2026** |
+| v2 (`english_2026-04`) ported | 1.000 | June 2026 |
+| **v0.5.0 gate: both models, 4/4 phrases, host + device** | **1.000000** | **June 11, 2026** |
+
+---
+
+*This document captures the story of the project as of 2026-06-11. For current technical status, see [PORTING_STATUS.md](../PORTING_STATUS.md). For the v2 migration details, see [docs/V2_MIGRATION.md](V2_MIGRATION.md). For Python reference documentation, see [docs/python-reference/](python-reference/). For agent prompts, see [docs/prompts/](prompts/). For audit reports, see [docs/audit/](audit/). For quality infrastructure, see [docs/quality/](quality/). For changelog, see [CHANGELOG.md](../CHANGELOG.md).*

@@ -311,7 +311,7 @@ python quality_metrics.py \
 ```bash
 python baseline_tracker.py \
   --check-regression \
-  --baseline baselines/baseline_v0.4.1.json \
+  --baseline baselines/baseline_v0.5.0.json \
   --metrics quality_results.json
 ```
 
@@ -362,7 +362,7 @@ Quality checks run automatically in GitHub Actions (see `.github/workflows/valid
   run: |
     python baseline_tracker.py \
       --check-regression \
-      --baseline baselines/baseline_v0.4.1.json \
+      --baseline baselines/baseline_v0.5.0.json \
       --metrics results.json
   # Fails if WER increases >10%, SNR decreases >10dB, etc.
 ```

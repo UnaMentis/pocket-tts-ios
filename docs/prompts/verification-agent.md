@@ -87,7 +87,7 @@ This provides:
 ```bash
 python3 validation/baseline_tracker.py \
   --compare \
-  --baseline validation/baselines/baseline_v0.4.1.json \
+  --baseline validation/baselines/baseline_v0.5.0.json \
   --metrics /tmp/quality_results.json
 ```
 

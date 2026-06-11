@@ -4,9 +4,36 @@
 
 Porting Kyutai Pocket TTS (~117M parameter on-device TTS model) from Python to Rust/Candle for iOS deployment.
 
-**Current Status**: ✅ Production ready. Correlation optimization in progress.
+**Current Status**: ✅ Production ready. Numerical parity achieved and held for both supported models.
 
-**Primary Metric**: End-to-end waveform correlation = **0.839** (noise-matched, phrase_00). Target: >0.95.
+**Primary Metric**: End-to-end waveform correlation = **1.000000** (noise-matched), measured on
+**all 4 canonical phrases × both models** — v1 `english_2026-01` and v2 `english_2026-04` — with
+exact reference-length output and per-frame minima >0.998. Raw artifact:
+`docs/audit/correlation-v0.5.0-2026-06-11.txt`.
+
+History: ~0 (pre noise-matching) → 0.839 (2026-03-18 noise off-by-one fix) → **1.000**
+(2026-03-21 Mimi decoder causal+context attention mask). Re-confirmed 2026-06-06 (v2 migration)
+and 2026-06-11 (post-cleanup release gate).
+
+> Note on the 2026-03-19 baseline's phrase_02 = 0.011 anomaly: that was a **harness bug** —
+> `run_baseline.sh` synthesized a sentence that was not the reference phrase and correlated two
+> different utterances. Fixed 2026-06-11; phrase_02 = 1.000000 like the rest.
+
+---
+
+## v2 (english_2026-04) Support — 2026-06 (v0.5.0)
+
+- v2 voice files are precomputed transformer **KV-state** voices (`bos_before_voice` + speaker
+  projection baked in offline); the loader detects v1 embeddings vs v2 KV states and the FlowLM
+  preloads the caches directly (`prime_voice_conditioning`, shared by sync and streaming paths).
+- The Mimi decode path needed **no changes** for v2 (only 3 upstream tensors changed; none are
+  read at synthesis time). See `docs/V2_MIGRATION.md`.
+- Noise-matched validation: 1.000000 on all 4 phrases, host and on-device (iOS Compare tab).
+- Weight-load shape assertions (`verify_model_shapes`) fail fast with a clear message on
+  incompatible weights; voice files are format- and dim-checked on load.
+- Noise-matched generation never falls back to RNG: it stops exactly where the captured parity
+  region ends, and errors if a capture is too short to start. 12× repeat runs produce
+  byte-identical output (the 2026-06-06 intermittent loop failure is resolved).
 
 ---
 
@@ -28,12 +55,14 @@ Changed `noise_tensors[step]` → `noise_tensors[step + 1]` in flowlm.rs (both s
 - `softmax_last_dim()` in attention.rs — bit-identical output
 - `rope_i()` from candle_nn in rotary.rs — bit-identical output
 
-### Remaining gap (~16%)
-Transformer hidden states still differ slightly between Python and Rust, causing FlowNet to get different conditioning. See `docs/audit/approaches-tried.md` for full log.
+### Remaining gap (~16%) — CLOSED 2026-03-21
+The gap was isolated via per-layer dumps to the Mimi decoder transformer, which was missing
+Python's causal + context-window (250) attention mask. Adding the mask closed the gap entirely:
+0.839 → **1.000**. See `docs/audit/approaches-tried.md` for the full diagnostic chain.
 
 ---
 
-## Session 2025-01-27: Streaming Quality Fixes & API Cleanup
+## Session 2026-01-27: Streaming Quality Fixes & API Cleanup
 
 ### Summary
 Fixed streaming audio quality issues and cleaned up the API by removing the legacy token-chunked streaming method.
@@ -84,7 +113,12 @@ The Rust implementation is now feature-complete with random noise enabled (match
 - Streaming Mimi decoder with replicate padding
 - Real-time factor: ~3-4x on CPU
 
-Note: With random noise enabled, waveform correlation is no longer a meaningful metric since different random number generators produce different (but equally valid) latent trajectories. Audio quality is now validated through amplitude/RMS ratios and listening tests.
+Note on metrics: **production synthesis uses freshly sampled noise** (every utterance is a new
+draw, so raw-waveform correlation between two free-running generations is ~0 *by design*). The
+**parity metric** is noise-matched correlation: feed Rust the captured Python noise tensors and
+the waveforms must match (= 1.000). Free-running quality is validated through amplitude/RMS
+ratios, signal-health checks, and listening tests; numerical parity is validated with the
+noise-matched gate (`.claude/skills/verify/run_baseline.sh`, on-device via the demo's Compare tab).
 
 ---
 

@@ -75,6 +75,19 @@ git commit --no-verify -m "message"
 
 Bypasses are logged for audit purposes.
 
+### Validation Requirements
+
+This project holds a numerical parity bar against the Python reference:
+
+- **Any change to `src/models/` or `src/modules/` must pass the noise-matched
+  correlation gate**: run `.claude/skills/verify/run_baseline.sh` and confirm
+  correlation = **1.000 on all 4 phrases, for both the v1 and v2 models**.
+  No regression below 1.000 is accepted.
+- Such changes must also pass the iOS build (`./scripts/build-ios.sh`).
+- `cargo check --features diagnostics` must stay green — the diagnostics
+  feature gates the tensor-dump tooling and is easy to break silently when
+  refactoring.
+
 ## Pull Request Process
 
 1. **Create a feature branch**:

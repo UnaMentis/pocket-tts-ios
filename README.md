@@ -21,6 +21,8 @@ Pre-built XCFrameworks are available on the [Releases](https://github.com/UnaMen
 Each release includes:
 - `PocketTTS.xcframework` - iOS static library (device + simulator)
 - Swift bindings and wrapper files
+- v1 model weights (`Models/`) — v2 weights are gated and must be downloaded
+  separately (see [Obtaining model weights](#obtaining-model-weights))
 - Integration documentation
 
 See [docs/INTEGRATION.md](docs/INTEGRATION.md) for detailed integration instructions.
@@ -111,12 +113,28 @@ let result = try engine.synthesize(text: "Hello, world!")
 
 ## Model Files
 
-The model files should be placed in:
+### Model versions
+
+v0.5.0 supports both Pocket TTS model generations. The engine auto-detects
+which voice-file format it is given and errors clearly on anything else.
+
+| | v1 (`english_2026-01`) | v2 (`english_2026-04`) |
+|---|---|---|
+| Hugging Face repo | `kyutai/pocket-tts-without-voice-cloning` (public) | `kyutai/pocket-tts` (gated) |
+| Voice file format | Embedding sequence (`audio_prompt`, `[1, seq, 1024]`) | Precomputed transformer KV-state (`transformer.layers.{i}.self_attn/cache`, `bos_before_voice` + speaker projection baked in) |
+| Model directory | `kyutai-pocket-ios/` | `kyutai-pocket-ios-en2026-04/` |
+| TTFA (host, 2026-06-11) | 252ms avg | 137ms avg |
+
+The two voice formats are incompatible with each other — use voices from the
+same generation as the model weights.
+
+Each model directory has the same layout (8 voices each):
+
 ```
-kyutai-pocket-ios/
+kyutai-pocket-ios/            # v1   (kyutai-pocket-ios-en2026-04/ for v2)
 ├── model.safetensors     # Main model weights (225MB)
 ├── tokenizer.model       # SentencePiece tokenizer (60KB)
-└── voices/               # Voice embeddings (4.2MB)
+└── voices/               # Voice files
     ├── alba.safetensors
     ├── marius.safetensors
     ├── javert.safetensors
@@ -127,6 +145,31 @@ kyutai-pocket-ios/
     └── azelma.safetensors
 ```
 
+Both directories are gitignored — obtain the weights as described below.
+
+### Obtaining model weights
+
+```bash
+# v1 (english_2026-01) — public repo, no login needed
+python scripts/download-model.py
+
+# v2 (english_2026-04) — gated repo, requires Hugging Face access
+python scripts/download-model.py --model v2
+```
+
+For v2, the weights live in the **gated** repo
+[kyutai/pocket-tts](https://huggingface.co/kyutai/pocket-tts):
+
+1. Visit https://huggingface.co/kyutai/pocket-tts and accept the gate
+2. Authenticate locally with `huggingface-cli login`, or set the `HF_TOKEN`
+   environment variable for the download run
+3. Run `python scripts/download-model.py --model v2`
+
+**Redistribution policy**: v2 weights are never redistributed in this
+project's release artifacts, respecting Kyutai's gate. The release zip bundles
+v1 weights only (as before); every v2 user downloads the weights directly from
+Hugging Face.
+
 ## Features
 
 - **8 Built-in Voices**: Alba, Marius, Javert, Jean, Fantine, Cosette, Eponine, Azelma
@@ -136,9 +179,19 @@ kyutai-pocket-ios/
 
 ## Performance
 
-- Time to first audio (TTFA): ~200ms
-- Real-time factor (RTF): ~3-4x on iPhone 15 Pro
-- Memory usage: ~150MB during inference
+Measured with release builds in streaming mode:
+
+| Metric | v2 (english_2026-04) | v1 (english_2026-01) | Where / When |
+|--------|----------------------|----------------------|--------------|
+| TTFA (avg) | **137ms** (short 147 / medium 118 / long 146ms) | 252ms | Apple-silicon Mac (host), 2026-06-11 |
+| RTF | **2.94x** | 2.64x | Apple-silicon Mac (host), 2026-06-11 |
+| TTFA | 159ms | — | iPhone 17 Pro simulator, 2026-06-06 |
+| RTF | 2.70x streaming / 3.20x sync | — | iPhone 17 Pro simulator, 2026-06-06 |
+| Model load | 0.29s | — | iPhone 17 Pro simulator, 2026-06-06 |
+
+v1 is slower to first audio because v1 voices run a 125-position prompt
+through the transformer at synthesis start; v2 voices are precomputed KV
+states. Memory usage is ~150MB during inference.
 
 ### Latency Benchmarking
 
@@ -194,7 +247,7 @@ python quality_metrics.py \
 # Compare to baseline
 python baseline_tracker.py \
   --check-regression \
-  --baseline baselines/baseline_v0.4.1.json \
+  --baseline baselines/baseline_v0.5.0.json \
   --metrics quality_results.json
 ```
 
@@ -265,6 +318,11 @@ This project uses comprehensive development infrastructure:
 - **CI/CD pipelines**: Lint, test, coverage, iOS build, security scan
 - **Code coverage**: cargo-tarpaulin with 70% minimum threshold
 - **AI review**: CodeRabbit integration
+
+**Debugging note**: the library is silent by default (one-shot messages sit
+behind `log::debug`). The `.npy` tensor-dump tooling used for parity debugging
+is gated behind the `diagnostics` cargo feature — build with
+`cargo build --features diagnostics` when you need intermediate tensor dumps.
 
 See [docs/quality/QUALITY_PLAN.md](docs/quality/QUALITY_PLAN.md) for details.
 

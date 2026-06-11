@@ -28,19 +28,63 @@ The XCFramework should be automatically recognized. If you encounter issues:
 
 ## Model Files
 
-Pocket TTS requires model files that are **not included** in the release due to size. You need to:
+Pocket TTS requires a model directory (weights + tokenizer + voices) bundled
+in your app. As of v0.5.0 you can bundle either model generation — v1 or v2.
 
-1. Download model files from the appropriate source
-2. Add them to your app bundle
+### Choosing a Model Version
+
+| | v1 (`english_2026-01`) | v2 (`english_2026-04`) |
+|---|---|---|
+| Availability | Public Hugging Face repo (`kyutai/pocket-tts-without-voice-cloning`); also bundled in this project's release zip | **Gated** Hugging Face repo (`kyutai/pocket-tts`); user-downloaded only |
+| Voice file format | Embedding sequence (`audio_prompt`, `[1, seq, 1024]`) | Precomputed transformer KV-state (`bos_before_voice` + speaker projection baked in) |
+| TTFA (host, 2026-06-11) | 252ms avg | 137ms avg — voices skip the 125-position voice prompt |
+| Local directory convention | `kyutai-pocket-ios/` | `kyutai-pocket-ios-en2026-04/` |
+
+**Both versions work with the same XCFramework API** — no code changes needed.
+The engine auto-detects which voice-file format it is given and errors clearly
+on anything else. The two voice formats are incompatible with each other, so
+bundle voices from the same generation as the model weights.
+
+### Getting the Weights
+
+Use `scripts/download-model.py` from the repository for either version:
+
+```bash
+# v1 — public repo, no login needed
+python scripts/download-model.py
+
+# v2 — gated repo, requires Hugging Face access (see below)
+python scripts/download-model.py --model v2
+```
+
+v1 weights are also included in the release zip (`Models/` folder).
+
+**For v2**, the weights are gated on Hugging Face and are **never
+redistributed in this project's release artifacts** (respecting Kyutai's
+gate). Each user must:
+
+1. Visit https://huggingface.co/kyutai/pocket-tts and accept the gate
+   (instant approval)
+2. Authenticate locally:
+   ```bash
+   huggingface-cli login
+   # or, for a single run:
+   HF_TOKEN=hf_... python scripts/download-model.py --model v2
+   ```
+3. Run `python scripts/download-model.py --model v2`
 
 ### Expected Structure
+
+Both model generations use the same layout — bundle the contents of whichever
+model directory you chose (v1 `kyutai-pocket-ios/` or v2
+`kyutai-pocket-ios-en2026-04/`) as your app's `Models/` folder:
 
 ```
 YourApp.app/
 └── Models/
     ├── model.safetensors     # Main model (~225MB)
     ├── tokenizer.model       # Tokenizer (~60KB)
-    └── voices/               # Voice embeddings (~4MB)
+    └── voices/               # Voice files (v1 embeddings or v2 KV-states)
         ├── alba.safetensors
         ├── marius.safetensors
         ├── javert.safetensors

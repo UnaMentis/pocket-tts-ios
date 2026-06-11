@@ -47,7 +47,7 @@ cd validation
   --reference python_ref.wav \
   --rust ../rust_output.wav \
   --text "Hello, this is a test." \
-  --save-baseline baselines/baseline_v0.4.1.json
+  --save-baseline baselines/baseline_v0.5.0.json
 ```
 
 ### 2. Check for Regressions
@@ -59,7 +59,7 @@ After making changes, compare against baseline:
   --reference python_ref.wav \
   --rust ../rust_output.wav \
   --text "Hello, this is a test." \
-  --baseline baselines/baseline_v0.4.1.json \
+  --baseline baselines/baseline_v0.5.0.json \
   --check-regression
 ```
 
@@ -123,7 +123,7 @@ When you've validated improvements:
     cd validation
     python baseline_tracker.py \
       --check-regression \
-      --baseline baselines/baseline_v0.4.1.json \
+      --baseline baselines/baseline_v0.5.0.json \
       --metrics quality_reports/latest.json
 ```
 
@@ -144,7 +144,7 @@ When you've validated improvements:
   --reference python_ref.wav \
   --rust rust_output.wav \
   --text "Hello world" \
-  --baseline baselines/baseline_v0.4.1.json
+  --baseline baselines/baseline_v0.5.0.json
 
 # 2. Review results
 # - Are there any regressions?
@@ -174,7 +174,7 @@ cat validation/quality_reports/quality_report_TIMESTAMP.json
 # 2. Compare specific metrics
 python baseline_tracker.py \
   --compare \
-  --baseline baselines/baseline_v0.4.1.json \
+  --baseline baselines/baseline_v0.5.0.json \
   --metrics quality_reports/quality_report_TIMESTAMP.json
 
 # 3. Listen to the audio
@@ -362,7 +362,7 @@ On PRs, CI compares against the baseline but doesn't update it:
     cd validation
     python baseline_tracker.py \
       --check-regression \
-      --baseline baselines/baseline_v0.4.1.json \
+      --baseline baselines/baseline_v0.5.0.json \
       --metrics latest.json
 ```
 
@@ -418,7 +418,7 @@ Don't delete old baselines - they're useful for:
 ```
 validation/baselines/
   baseline_v0.4.0.json
-  baseline_v0.4.1.json
+  baseline_v0.5.0.json
   baseline_v0.4.2.json
   baseline_latest.json  # Symlink to current
 ```
@@ -432,7 +432,7 @@ validation/baselines/
 ```bash
 # Create initial baseline
 ./run_quality_check.sh ... \
-  --save-baseline baselines/baseline_v0.4.1.json
+  --save-baseline baselines/baseline_v0.5.0.json
 ```
 
 ### "Metrics file not found"

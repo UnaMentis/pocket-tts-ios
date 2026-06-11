@@ -21,6 +21,32 @@ Based on the Kyutai Pocket TTS architecture documentation:
 | iPhone 14 | ~0.5s | 2.0-2.5x | Acceptable |
 | iPad Pro M2 | ~0.2s | 4.0-5.0x | Best performance |
 
+### Measured Results (v0.5.0)
+
+Host measurements, 2026-06-11 (Apple-silicon Mac, release build, streaming):
+
+| Model | TTFA (avg) | TTFA breakdown | RTF | Result |
+|-------|------------|----------------|-----|--------|
+| v2 (`english_2026-04`) | **137ms** | short 147 / medium 118 / long 146ms | **2.94x** | PASS |
+| v1 (`english_2026-01`) | 252ms | — | 2.64x | PASS |
+
+The v1-vs-v2 TTFA gap is structural: v1 voices run a 125-position voice
+prompt through the transformer at synthesis start, while v2 voices are
+precomputed transformer KV-states that are simply preloaded.
+
+On-device measurements, 2026-06-06 (iPhone 17 Pro simulator, v2):
+
+| Metric | Value |
+|--------|-------|
+| TTFA | 159ms |
+| RTF | 2.70x streaming / 3.20x sync |
+| Model load | 0.29s |
+
+> **Note on older numbers**: latency results recorded before June 2026
+> (e.g. the January 2026 figures of ~1040ms average TTFA) were measured with
+> heavy debug instrumentation in the hot path and are **obsolete**. Do not
+> compare against them; use the 2026-06 measurements above as the baseline.
+
 ## Running Benchmarks
 
 ### Development Environment (Rust)
@@ -77,14 +103,16 @@ The demo shows:
 
 The most important latency metric for user experience. Measures the delay from when text is submitted until audio begins playing.
 
-**Breakdown:**
+**Breakdown (budget):**
 1. Tokenization (~10ms)
 2. Voice embedding lookup (~1ms)
 3. First latent generation (~50ms)
 4. Mimi decoder warmup (~100ms)
 5. First chunk delivery (~40ms buffer)
 
-**Total: ~200ms**
+**Budget total: ~200ms** — measured v0.5.0 results come in under budget
+(137ms average for v2 on an Apple-silicon host, 2026-06-11; v1 voices add a
+125-position voice prompt pass, hence 252ms).
 
 ### RTF (Real-Time Factor)
 

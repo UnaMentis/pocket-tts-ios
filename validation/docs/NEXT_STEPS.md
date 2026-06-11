@@ -141,7 +141,7 @@ python validation/compare_runs.py \
 ./validation/establish_baseline.sh
 ```
 
-This creates `validation/baselines/baseline_v0.4.1.json`
+This creates `validation/baselines/baseline_v0.5.0.json`
 
 ## Then: Test Regression Detection
 
@@ -162,7 +162,7 @@ cd validation
   --reference reference_outputs/phrase_00.wav \
   --rust ../test_modified.wav \
   --text "Hello, this is a test." \
-  --baseline baselines/baseline_v0.4.1.json \
+  --baseline baselines/baseline_v0.5.0.json \
   --check-regression
 ```
 

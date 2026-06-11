@@ -32,7 +32,7 @@ Last distilled: 2026-03-19
 
 ### 2. Waveform Correlation IS the Right Metric (with Noise Matching)
 - **Previous belief (OUTDATED)**: "Don't expect high Rust-vs-Python waveform correlation" — this was wrong, caused by noise misalignment
-- **Current understanding**: With correctly-aligned noise, correlation = 0.839. The remaining ~16% gap is real transformer divergence.
+- **Current understanding**: With correctly-aligned noise, correlation = **1.000** (since the 2026-03-21 Mimi causal+context mask fix; re-confirmed 2026-06-11 on all 4 phrases for both v1 and v2). The interim 0.839 plateau's ~16% gap turned out to be Mimi decoder attention-mask divergence, not the transformer (see Lesson 4).
 - **Without noise matching**: Correlation is ~0 because Python's text-prompting FlowNet call advances the RNG, making all subsequent noise different even with same seed.
 
 ### 3. SEANet Requires Full Streaming for ALL Layers

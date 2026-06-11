@@ -32,7 +32,10 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 
-# Phrases and their IDs (must match reference_harness.py TEST_PHRASES)
+# Phrases and their IDs. The reference manifest is the single source of
+# truth when present (this is what makes per-language validation work —
+# each language's references carry native-language phrases). The builtin
+# list is the fallback for older reference dirs without a manifest.
 # NOTE: phrase_02 was wrong here until 2026-06-11 ("I can speak with different
 # voices and expressions." — not a reference phrase). That mismatch is what
 # produced the unexplained 0.011 correlation for phrase_02 in the 2026-03-19
@@ -44,6 +47,20 @@ PHRASES=(
     "How are you doing today?"
 )
 PHRASE_IDS=(phrase_00 phrase_01 phrase_02 phrase_03)
+
+if [[ -f "$REFERENCE_DIR/manifest.json" ]]; then
+    PHRASES=()
+    PHRASE_IDS=()
+    while IFS=$'\t' read -r pid ptext; do
+        PHRASE_IDS+=("$pid")
+        PHRASES+=("$ptext")
+    done < <($PYTHON -c "
+import json
+m = json.load(open('$REFERENCE_DIR/manifest.json'))
+for p in m['phrases']:
+    print(f\"{p['id']}\t{p['text']}\")
+")
+fi
 
 # Build if needed
 if [[ ! -f target/release/test-tts ]] || [[ $(find src -newer target/release/test-tts -name '*.rs' 2>/dev/null | head -1) ]]; then

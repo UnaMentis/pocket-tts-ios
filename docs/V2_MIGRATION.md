@@ -4,9 +4,21 @@
 multilingual 6L (`italian`, `german`, `spanish`, `portuguese`) — **without losing the 1.000
 waveform correlation** we achieved on `english_2026-01`.
 
-**Status:** Phase 1 in progress. Hard blocker: HuggingFace auth for gated weight downloads.
+**Status:** ✅ english_2026-04 COMPLETE — validated to 1.000 correlation (all 4 phrases, host +
+on-device, §5d–5f), shipped in v0.5.0. Multilingual (it/de/es/pt) is a per-language weight +
+tokenizer + voice swap (§5d "Implication"), tracked on the `feature/multilingual-v2` branch.
 
-Last updated: 2026-06-06.
+| Model | Status | Noise-matched correlation |
+|---|---|---|
+| english_2026-01 (v1) | ✅ validated | 1.000000 × 4 phrases |
+| english_2026-04 (v2) | ✅ validated | 1.000000 × 4 phrases |
+| italian / german / spanish / portuguese | ⏳ pending per-language validation | — |
+
+Current raw gate artifact: `docs/audit/correlation-v0.5.0-2026-06-11.txt`.
+Weights: `scripts/download-model.py --model v2` (gated HF repo — users download with their own
+token; weights are never redistributed in release artifacts).
+
+Last updated: 2026-06-11.
 
 ---
 
@@ -171,11 +183,11 @@ path is untouched (still 1.000). The post-RoPE-K assumption for the saved cache 
   reads the 3 changed tensors (`speaker_proj_weight`, `bos_before_voice`, `mimi.downsample`), so the new
   weights load as-is. Model dir: `kyutai-pocket-ios-en2026-04/`.
 
-**Known robustness follow-up (not a production blocker):** running `test-tts` 12× in a tight loop
-intermittently fails to load noise tensors (empty output or seeded-RNG fallback → deterministic-but-wrong
-runs). Individually every phrase is 1.000. Likely a rapid CLI-spawn / noise-load race; production iOS uses
-the in-process engine with sampled noise, so unaffected. Worth hardening the noise loader / understanding
-the empty-output failure before shipping the validation harness as a loop.
+**Known robustness follow-up — RESOLVED 2026-06-11:** running `test-tts` 12× in a tight loop
+previously failed intermittently (empty output or seeded-RNG fallback → deterministic-but-wrong runs).
+The noise loader is now fail-loud (tensor size validated at load; generation stops exactly at the end of
+the captured parity region and never silently falls back to RNG). Post-fix, 12 consecutive noise-matched
+runs produce **byte-identical** output (single MD5 across all 12).
 
 **Implication for multilingual:** all 6L configs are dim-identical, and per-language differs only in
 weights + tokenizer (+ v2 KV-state voices). So it/de/es/pt should work by assembling a model dir per

@@ -14,6 +14,7 @@ Releases are automated via GitHub Actions. When you push a version tag, the work
 
 Before creating a release:
 - [ ] All tests passing on main branch
+- [ ] Correlation gate re-run and raw artifact saved (see Step 3)
 - [ ] CHANGELOG.md updated with release notes
 - [ ] Version bumped in Cargo.toml
 - [ ] All changes committed and pushed to main
@@ -49,15 +50,34 @@ Move items from `[Unreleased]` to a new version section in `CHANGELOG.md`:
 - Change description
 ```
 
-### Step 3: Commit Version Bump
+### Step 3: Run the Correlation Gate
+
+Before tagging, re-run the noise-matched correlation gate and archive the raw
+output:
 
 ```bash
-git add Cargo.toml Cargo.lock CHANGELOG.md
+# Host parity gate — must read 1.000000 on all 4 phrases for BOTH v1 and v2
+.claude/skills/verify/run_baseline.sh
+
+# Save the raw artifact alongside the release (committed)
+cp <gate output> docs/audit/correlation-vX.Y.Z-YYYY-MM-DD.txt
+```
+
+A release does not ship unless the gate reads 1.000000 × 4 phrases × both
+models. The saved artifact (e.g.
+`docs/audit/correlation-v0.5.0-2026-06-11.txt`) is the auditable record for
+that release. Also verify the iOS demo's Compare tab reads 1.0000 on all 4
+phrases on-device.
+
+### Step 4: Commit Version Bump
+
+```bash
+git add Cargo.toml Cargo.lock CHANGELOG.md docs/audit/correlation-v*.txt
 git commit -m "chore: prepare release vX.Y.Z"
 git push origin main
 ```
 
-### Step 4: Create and Push Tag
+### Step 5: Create and Push Tag
 
 ```bash
 git tag vX.Y.Z
@@ -70,11 +90,12 @@ Or push tag with the commit:
 git push origin main --tags
 ```
 
-### Step 5: Verify Release
+### Step 6: Verify Release
 
 1. Go to GitHub Actions and watch the release workflow
 2. Once complete, check the Releases page
-3. Verify the zip file is attached and contains expected files
+3. Verify the zip file is attached and contains expected files (including v1
+   weights in `Models/` — and **no v2 weights**, see Model Weights Policy)
 4. Test downloading and integrating in a sample iOS project
 
 ## Manual Release (workflow_dispatch)
@@ -126,12 +147,40 @@ PocketTTS-vX.Y.Z.zip
 ├── Sources/
 │   ├── pocket_tts_ios.swift   # UniFFI-generated bindings
 │   └── PocketTTSSwift.swift   # High-level Swift wrapper
+├── Models/                     # v1 model weights ONLY (see policy below)
+│   ├── model.safetensors
+│   ├── tokenizer.model
+│   └── voices/
 ├── LICENSE
 ├── README.md                   # Integration guide
 └── CHANGELOG.md
 ```
 
 Plus a `.sha256` checksum file.
+
+## Model Weights Policy
+
+**v2 weights are NEVER bundled in release artifacts.** The v2 models
+(`english_2026-04` and later) are distributed from the **gated** Hugging Face
+repo `kyutai/pocket-tts`. Redistributing them in our release zips would
+bypass Kyutai's gate, so the policy is:
+
+- The release zip bundles **v1 weights only** (`english_2026-01`, from the
+  public `kyutai/pocket-tts-without-voice-cloning` repo) — as it always has.
+- Every v2 user downloads the weights directly from Hugging Face after
+  accepting the gate.
+- Before publishing, double-check the zip contains no v2 `model.safetensors`
+  or v2 voice files.
+
+**Release notes must include the v2 download instructions**, since they are
+not in the zip:
+
+```bash
+# v2 (english_2026-04) — accept the gate at
+# https://huggingface.co/kyutai/pocket-tts, then:
+huggingface-cli login   # or HF_TOKEN=hf_...
+python scripts/download-model.py --model v2
+```
 
 ## Troubleshooting
 
