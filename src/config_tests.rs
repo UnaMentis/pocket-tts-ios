@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{ModelManifest, PocketVoiceInfo, TTSConfig};
+    use crate::config::{PocketVoiceInfo, TTSConfig};
 
     #[test]
     fn test_default_config() {
@@ -159,20 +159,5 @@ mod tests {
         assert_eq!(voice.index, 0);
         assert_eq!(voice.name, "Alba");
         assert_eq!(voice.gender, "female");
-    }
-
-    #[test]
-    fn test_model_manifest_default() {
-        let manifest = ModelManifest::default();
-        assert_eq!(manifest.version, "1.0.2");
-        assert_eq!(manifest.model_id, "kyutai/pocket-tts");
-        assert_eq!(manifest.license, "CC-BY-4.0");
-        assert_eq!(manifest.parameters, 117_856_642);
-        assert_eq!(manifest.sample_rate, 24000);
-        assert!((manifest.frame_rate - 12.5).abs() < 0.001);
-        assert_eq!(manifest.hidden_size, 1024);
-        assert_eq!(manifest.num_layers, 6);
-        assert_eq!(manifest.num_heads, 16);
-        assert_eq!(manifest.vocab_size, 32000);
     }
 }

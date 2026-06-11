@@ -90,35 +90,3 @@ impl TTSConfig {
         Ok(())
     }
 }
-
-/// Model configuration loaded from manifest
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelManifest {
-    pub version: String,
-    pub model_id: String,
-    pub license: String,
-    pub parameters: u64,
-    pub sample_rate: u32,
-    pub frame_rate: f32,
-    pub hidden_size: u32,
-    pub num_layers: u32,
-    pub num_heads: u32,
-    pub vocab_size: u32,
-}
-
-impl Default for ModelManifest {
-    fn default() -> Self {
-        Self {
-            version: "1.0.2".into(),
-            model_id: "kyutai/pocket-tts".into(),
-            license: "CC-BY-4.0".into(),
-            parameters: 117_856_642,
-            sample_rate: 24000,
-            frame_rate: 12.5,
-            hidden_size: 1024,
-            num_layers: 6,
-            num_heads: 16,
-            vocab_size: 32000,
-        }
-    }
-}
