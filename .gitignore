@@ -41,6 +41,9 @@ validation/run1_rust.wav
 
 # iOS Test Harness - generated/downloaded by setup.sh
 tests/ios-harness/PocketTTS-v*/
+# Prebuilt framework copies must never be committed (a stale copy of this
+# path once added ~38MB of compressed dead weight to git history)
+tests/ios-harness/PocketTTSDemo/PocketTTS.xcframework/
 tests/ios-harness/*.zip
 tests/ios-harness/PocketTTSDemo/Frameworks/
 tests/ios-harness/PocketTTSDemo/PocketTTSDemo/Models/
