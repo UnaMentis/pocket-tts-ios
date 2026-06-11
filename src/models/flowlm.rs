@@ -438,8 +438,31 @@ impl FlowLM {
             // Generate next latent via FlowNet
             let cond = last_hidden.unsqueeze(1)?; // [1, 1, 1024]
             let step_seed = seed.map(|s| s.wrapping_add(step as u64));
-            // Offset by 1: noise_step_000 = Python's text prompting (discarded)
-            let noise_override = Self::noise_for_step(noise_tensors, step)?;
+            // Noise-matched runs use the captured Python noise, never RNG:
+            // a silent RNG fallback would produce a deterministic-but-WRONG
+            // parity result. Offset by 1: noise_step_000 is Python's text
+            // prompting draw (discarded). When the capture runs out, the
+            // parity region is over — stop cleanly (Python stopped there too).
+            let noise_override = match noise_tensors {
+                None => None,
+                Some(nt) => match nt.get(step + 1) {
+                    Some(t) => Some(t),
+                    None if step == 0 => {
+                        return Err(candle_core::Error::Msg(format!(
+                            "noise capture has only {} tensor(s) — too short to noise-match even one \
+                             step (corrupt or wrong noise_dir)",
+                            nt.len()
+                        )))
+                    },
+                    None => {
+                        log::debug!(
+                            "[FlowLM] captured noise exhausted at step {} — ending noise-matched generation",
+                            step
+                        );
+                        break;
+                    },
+                },
+            };
             let next_normalized =
                 self.flow_net
                     .generate(&cond, num_flow_steps, temperature, &self.device, step_seed, noise_override)?;
@@ -464,30 +487,6 @@ impl FlowLM {
         }
 
         Tensor::cat(&all_latents, 1)
-    }
-
-    /// Pick the captured noise tensor for an autoregressive step, failing LOUDLY
-    /// if noise matching was requested but the capture is too short.
-    ///
-    /// When `noise_tensors` is `Some`, the caller asked for a noise-matched
-    /// (deterministic, Python-parity) run. Silently falling back to RNG here
-    /// would produce a deterministic-but-WRONG validation result, so running
-    /// out of tensors is an error, never a fallback. `noise_step_000` is
-    /// Python's text-prompting noise (discarded), hence the +1 offset.
-    fn noise_for_step<'a>(noise_tensors: Option<&'a [Tensor]>, step: usize) -> Result<Option<&'a Tensor>> {
-        match noise_tensors {
-            None => Ok(None),
-            Some(nt) => nt.get(step + 1).map(Some).ok_or_else(|| {
-                candle_core::Error::Msg(format!(
-                    "noise-matched generation exhausted captured noise at step {}: have {} tensors, \
-                     need at least {} — the reference capture is shorter than this generation \
-                     (re-capture reference noise or check the noise_dir contents)",
-                    step,
-                    nt.len(),
-                    step + 2
-                ))
-            }),
-        }
     }
 
     /// Phase 1 of generation: prime the KV caches with voice conditioning.
@@ -615,9 +614,28 @@ impl FlowLM {
             let cond = last_hidden.unsqueeze(1)?;
             // Derive per-step seed for different-but-deterministic noise at each step
             let step_seed = seed.map(|s| s.wrapping_add(step as u64));
-            // Use pre-captured noise tensor if available for this step.
-            // Offset by 1: noise_step_000 is Python's text prompting noise (discarded).
-            let noise_override = Self::noise_for_step(noise_tensors, step)?;
+            // Same noise-matching contract as generate_latents: captured noise or
+            // nothing — stop at capture end, never fall back to RNG mid-run.
+            let noise_override = match noise_tensors {
+                None => None,
+                Some(nt) => match nt.get(step + 1) {
+                    Some(t) => Some(t),
+                    None if step == 0 => {
+                        return Err(candle_core::Error::Msg(format!(
+                            "noise capture has only {} tensor(s) — too short to noise-match even one \
+                             step (corrupt or wrong noise_dir)",
+                            nt.len()
+                        )))
+                    },
+                    None => {
+                        log::debug!(
+                            "[FlowLM] captured noise exhausted at step {} — ending noise-matched generation",
+                            step
+                        );
+                        break;
+                    },
+                },
+            };
             let next_normalized =
                 self.flow_net
                     .generate(&cond, num_flow_steps, temperature, &self.device, step_seed, noise_override)?;

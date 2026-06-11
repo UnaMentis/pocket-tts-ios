@@ -1,0 +1,133 @@
+# Pocket TTS v0.5.0 release gate — noise-matched correlation, raw output
+# Run: 2026-06-11, branch release/v0.5.0-prep (post-cleanup, commits ea86d68/c1f1166/443e064 + noise-stop fix)
+# Methodology: .claude/skills/verify/run_baseline.sh — captured Python noise, seed 42+i, consistency-steps 1, voice alba
+# NOTE: run_baseline.sh phrase_02 text was corrected this run (was a non-reference sentence;
+# explains the 0.011 phrase_02 anomaly in baseline-2026-03-19.txt — harness bug, not model)
+
+## v1 english_2026-01 (model: kyutai-pocket-ios/, refs: validation/reference_outputs/)
+# Pocket TTS Baseline Measurement
+# Date: 2026-06-11T06:26:25Z
+# Git: v0.4.1-22-g443e064-dirty
+# Noise dir: validation/reference_outputs/noise
+# Seed: 42
+# Consistency steps: 1
+#
+# --- phrase_00 ---
+phrase_00_CORRELATION=1.000000
+phrase_00_SAMPLES_REF=86400
+phrase_00_SAMPLES_RUST=86400
+phrase_00_FRAMES=45
+phrase_00_FRAME_MEDIAN_CORR=1.000000
+phrase_00_FRAME_MEAN_CORR=0.999892
+phrase_00_FRAME_MIN_CORR=0.998104
+phrase_00_FRAME_MAX_CORR=1.000000
+phrase_00_FRAMES_ABOVE_0_8=45
+phrase_00_FRAMES_ABOVE_0_9=45
+phrase_00_RMS_RATIO=0.9999
+# --- phrase_01 ---
+phrase_01_CORRELATION=1.000000
+phrase_01_SAMPLES_REF=74880
+phrase_01_SAMPLES_RUST=74880
+phrase_01_FRAMES=39
+phrase_01_FRAME_MEDIAN_CORR=1.000000
+phrase_01_FRAME_MEAN_CORR=0.999980
+phrase_01_FRAME_MIN_CORR=0.999569
+phrase_01_FRAME_MAX_CORR=1.000000
+phrase_01_FRAMES_ABOVE_0_8=39
+phrase_01_FRAMES_ABOVE_0_9=39
+phrase_01_RMS_RATIO=0.9999
+# --- phrase_02 ---
+phrase_02_CORRELATION=1.000000
+phrase_02_SAMPLES_REF=69120
+phrase_02_SAMPLES_RUST=69120
+phrase_02_FRAMES=36
+phrase_02_FRAME_MEDIAN_CORR=1.000000
+phrase_02_FRAME_MEAN_CORR=0.999993
+phrase_02_FRAME_MIN_CORR=0.999761
+phrase_02_FRAME_MAX_CORR=1.000000
+phrase_02_FRAMES_ABOVE_0_8=36
+phrase_02_FRAMES_ABOVE_0_9=36
+phrase_02_RMS_RATIO=0.9999
+# --- phrase_03 ---
+phrase_03_CORRELATION=1.000000
+phrase_03_SAMPLES_REF=34560
+phrase_03_SAMPLES_RUST=34560
+phrase_03_FRAMES=18
+phrase_03_FRAME_MEDIAN_CORR=1.000000
+phrase_03_FRAME_MEAN_CORR=0.999935
+phrase_03_FRAME_MIN_CORR=0.999283
+phrase_03_FRAME_MAX_CORR=1.000000
+phrase_03_FRAMES_ABOVE_0_8=18
+phrase_03_FRAMES_ABOVE_0_9=18
+phrase_03_RMS_RATIO=0.9999
+#
+# --- Summary ---
+MEAN_CORRELATION=1.000000
+MIN_CORRELATION=1.000000
+MAX_CORRELATION=1.000000
+NUM_PHRASES=4
+OUTPUT_DIR=/tmp/tts-baseline
+
+## v2 english_2026-04 (model: kyutai-pocket-ios-en2026-04/, refs: validation/reference_outputs_en2026-04/)
+# Pocket TTS Baseline Measurement
+# Date: 2026-06-11T06:26:46Z
+# Git: v0.4.1-22-g443e064-dirty
+# Noise dir: validation/reference_outputs_en2026-04/noise
+# Seed: 42
+# Consistency steps: 1
+#
+# --- phrase_00 ---
+phrase_00_CORRELATION=1.000000
+phrase_00_SAMPLES_REF=61440
+phrase_00_SAMPLES_RUST=61440
+phrase_00_FRAMES=32
+phrase_00_FRAME_MEDIAN_CORR=1.000000
+phrase_00_FRAME_MEAN_CORR=0.999997
+phrase_00_FRAME_MIN_CORR=0.999959
+phrase_00_FRAME_MAX_CORR=1.000000
+phrase_00_FRAMES_ABOVE_0_8=32
+phrase_00_FRAMES_ABOVE_0_9=32
+phrase_00_RMS_RATIO=0.9999
+# --- phrase_01 ---
+phrase_01_CORRELATION=1.000000
+phrase_01_SAMPLES_REF=67200
+phrase_01_SAMPLES_RUST=67200
+phrase_01_FRAMES=35
+phrase_01_FRAME_MEDIAN_CORR=1.000000
+phrase_01_FRAME_MEAN_CORR=0.999996
+phrase_01_FRAME_MIN_CORR=0.999867
+phrase_01_FRAME_MAX_CORR=1.000000
+phrase_01_FRAMES_ABOVE_0_8=35
+phrase_01_FRAMES_ABOVE_0_9=35
+phrase_01_RMS_RATIO=0.9999
+# --- phrase_02 ---
+phrase_02_CORRELATION=1.000000
+phrase_02_SAMPLES_REF=63360
+phrase_02_SAMPLES_RUST=63360
+phrase_02_FRAMES=33
+phrase_02_FRAME_MEDIAN_CORR=1.000000
+phrase_02_FRAME_MEAN_CORR=0.999996
+phrase_02_FRAME_MIN_CORR=0.999886
+phrase_02_FRAME_MAX_CORR=1.000000
+phrase_02_FRAMES_ABOVE_0_8=33
+phrase_02_FRAMES_ABOVE_0_9=33
+phrase_02_RMS_RATIO=0.9999
+# --- phrase_03 ---
+phrase_03_CORRELATION=1.000000
+phrase_03_SAMPLES_REF=24960
+phrase_03_SAMPLES_RUST=24960
+phrase_03_FRAMES=13
+phrase_03_FRAME_MEDIAN_CORR=1.000000
+phrase_03_FRAME_MEAN_CORR=0.999979
+phrase_03_FRAME_MIN_CORR=0.999722
+phrase_03_FRAME_MAX_CORR=1.000000
+phrase_03_FRAMES_ABOVE_0_8=13
+phrase_03_FRAMES_ABOVE_0_9=13
+phrase_03_RMS_RATIO=0.9999
+#
+# --- Summary ---
+MEAN_CORRELATION=1.000000
+MIN_CORRELATION=1.000000
+MAX_CORRELATION=1.000000
+NUM_PHRASES=4
+OUTPUT_DIR=/tmp/tts-baseline

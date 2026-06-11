@@ -13,12 +13,14 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$PROJECT_ROOT"
 
-# Configuration — NEVER change these without updating all docs
-NOISE_DIR="validation/reference_outputs/noise"
-REFERENCE_DIR="validation/reference_outputs"
+# Configuration — NEVER change these without updating all docs.
+# MODEL_DIR / NOISE_DIR / REFERENCE_DIR may be overridden via env to validate
+# other model variants (e.g. v2 english_2026-04) with identical methodology.
+NOISE_DIR="${NOISE_DIR:-validation/reference_outputs/noise}"
+REFERENCE_DIR="${REFERENCE_DIR:-validation/reference_outputs}"
 SEED=42
 CONSISTENCY_STEPS=1
-MODEL_DIR="./kyutai-pocket-ios"
+MODEL_DIR="${MODEL_DIR:-./kyutai-pocket-ios}"
 PYTHON="${PROJECT_ROOT}/validation/.venv/bin/python3"
 
 OUTPUT_DIR="${2:-/tmp/tts-baseline}"
@@ -31,10 +33,14 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 # Phrases and their IDs (must match reference_harness.py TEST_PHRASES)
+# NOTE: phrase_02 was wrong here until 2026-06-11 ("I can speak with different
+# voices and expressions." — not a reference phrase). That mismatch is what
+# produced the unexplained 0.011 correlation for phrase_02 in the 2026-03-19
+# baseline: the script was correlating two different sentences.
 PHRASES=(
     "Hello, this is a test of the Pocket TTS system."
     "The quick brown fox jumps over the lazy dog."
-    "I can speak with different voices and expressions."
+    "One two three four five six seven eight nine ten."
     "How are you doing today?"
 )
 PHRASE_IDS=(phrase_00 phrase_01 phrase_02 phrase_03)
