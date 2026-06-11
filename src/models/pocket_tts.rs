@@ -34,6 +34,27 @@ pub struct PocketTTSModel {
     noise_tensors: Option<Vec<Tensor>>,
 }
 
+/// Load-bearing tensor shapes shared by every supported Pocket TTS model
+/// (v1 `english_2026-01` and all v2 6L variants, which are dim-identical).
+/// One tensor per pipeline stage: text embedding, FlowLM attention, the
+/// latent projection, FlowNet, latent normalization, and the Mimi decoder.
+/// Checked against the safetensors header before any module is constructed,
+/// so an incompatible weights file fails fast with a clear message instead
+/// of a cryptic shape error deep inside layer construction.
+const EXPECTED_MODEL_SHAPES: &[(&str, &[usize])] = &[
+    ("flow_lm.conditioner.embed.weight", &[4001, 1024]),
+    ("flow_lm.transformer.layers.0.self_attn.in_proj.weight", &[3072, 1024]),
+    ("flow_lm.input_linear.weight", &[1024, 32]),
+    ("flow_lm.flow_net.input_proj.weight", &[512, 32]),
+    ("flow_lm.emb_mean", &[32]),
+    ("mimi.quantizer.output_proj.weight", &[512, 32, 1]),
+    (
+        "mimi.decoder_transformer.transformer.layers.0.self_attn.in_proj.weight",
+        &[1536, 512],
+    ),
+    ("mimi.decoder.model.0.conv.weight", &[512, 512, 7]),
+];
+
 impl PocketTTSModel {
     /// Load model from directory containing all components
     pub fn load<P: AsRef<Path>>(model_dir: P, device: &Device) -> std::result::Result<Self, PocketTTSError> {
@@ -41,6 +62,9 @@ impl PocketTTSModel {
 
         // Load model weights using memory-mapped file
         let model_path = model_dir.join("model.safetensors");
+
+        // Fail fast and loudly on weights this implementation was not verified against.
+        Self::verify_model_shapes(&model_path)?;
 
         // Create VarBuilder from safetensors file
         let vb = unsafe {
@@ -79,6 +103,54 @@ impl PocketTTSModel {
             custom_voice: None,
             noise_tensors: None,
         })
+    }
+
+    /// Check the safetensors header against `EXPECTED_MODEL_SHAPES`.
+    ///
+    /// Reads only the header (8-byte length prefix + JSON), never the tensor
+    /// data, so the check is effectively free even for 200MB+ files.
+    fn verify_model_shapes(model_path: &Path) -> std::result::Result<(), PocketTTSError> {
+        use std::io::Read;
+
+        let err = |msg: String| PocketTTSError::ModelLoadFailed(format!("{}: {}", model_path.display(), msg));
+
+        let mut file = std::fs::File::open(model_path).map_err(|e| err(format!("cannot open: {}", e)))?;
+        let mut len_buf = [0u8; 8];
+        file.read_exact(&mut len_buf)
+            .map_err(|e| err(format!("cannot read safetensors header length: {}", e)))?;
+        let header_len = u64::from_le_bytes(len_buf) as usize;
+        if header_len == 0 || header_len > 100_000_000 {
+            return Err(err(format!("header length {} — not a safetensors file", header_len)));
+        }
+        let mut header_buf = vec![0u8; header_len];
+        file.read_exact(&mut header_buf)
+            .map_err(|e| err(format!("cannot read safetensors header: {}", e)))?;
+        let header: serde_json::Value =
+            serde_json::from_slice(&header_buf).map_err(|e| err(format!("invalid safetensors header: {}", e)))?;
+
+        for (name, want) in EXPECTED_MODEL_SHAPES {
+            let shape: Vec<usize> = header
+                .get(*name)
+                .and_then(|t| t.get("shape"))
+                .and_then(|s| s.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_u64()).map(|v| v as usize).collect())
+                .ok_or_else(|| {
+                    err(format!(
+                        "missing tensor '{}' — incompatible weights; expected a Pocket TTS v1 \
+                         (english_2026-01) or v2 6L (english_2026-04 / multilingual) model",
+                        name
+                    ))
+                })?;
+            if shape != *want {
+                return Err(err(format!(
+                    "tensor '{}' has shape {:?}, expected {:?} — incompatible weights; this \
+                     implementation is verified against Pocket TTS v1 (english_2026-01) and \
+                     v2 6L (english_2026-04 / multilingual) models",
+                    name, shape, want
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Configure synthesis parameters
@@ -128,6 +200,18 @@ impl PocketTTSModel {
             let tensor = Self::parse_npy_f32(&data, &self.device).map_err(|e| {
                 PocketTTSError::ModelLoadFailed(format!("Failed to parse noise file {:?}: {}", npy_path, e))
             })?;
+
+            // Each captured noise tensor is one FlowNet draw of latent_dim elements.
+            // A wrong-sized tensor means a corrupt/truncated capture: fail at load
+            // time rather than mid-synthesis.
+            let latent_dim = self.flowlm.config().latent_dim;
+            let elems = tensor.elem_count();
+            if elems != latent_dim {
+                return Err(PocketTTSError::ModelLoadFailed(format!(
+                    "Noise file {:?} has {} elements, expected {} (latent_dim) — corrupt or truncated capture",
+                    npy_path, elems, latent_dim
+                )));
+            }
 
             tensors.push(tensor);
             step += 1;

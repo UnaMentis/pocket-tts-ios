@@ -70,13 +70,18 @@ impl PocketTTSEngine {
             }
         }
 
-        *self.config.lock().unwrap() = config;
+        *self
+            .config
+            .lock()
+            .map_err(|_| PocketTTSError::InferenceFailed("Config lock poisoned".into()))? = config;
         Ok(())
     }
 
     /// Get current configuration
     pub fn get_config(&self) -> TTSConfig {
-        self.config.lock().unwrap().clone()
+        // A poisoned lock only means another thread panicked mid-update;
+        // the config value itself is still valid to read.
+        self.config.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     /// Synchronous synthesis - returns complete audio
@@ -142,7 +147,11 @@ impl PocketTTSEngine {
         let model = model_guard.as_mut().ok_or(PocketTTSError::ModelNotLoaded)?;
 
         // Save and apply validation config (restored before returning).
-        let saved = self.config.lock().unwrap().clone();
+        let saved = self
+            .config
+            .lock()
+            .map_err(|_| PocketTTSError::InferenceFailed("Config lock poisoned".into()))?
+            .clone();
         let mut cfg = saved.clone();
         cfg.voice_index = voice_index;
         cfg.use_fixed_seed = true;
@@ -185,7 +194,10 @@ impl PocketTTSEngine {
     /// This achieves lower TTFA by avoiding token chunking overhead.
     pub fn start_true_streaming(&self, text: String, handler: Box<dyn TTSEventHandler>) -> Result<(), PocketTTSError> {
         // Reset cancellation flag
-        *self.is_cancelled.lock().unwrap() = false;
+        *self
+            .is_cancelled
+            .lock()
+            .map_err(|_| PocketTTSError::InferenceFailed("Cancel lock poisoned".into()))? = false;
 
         let mut model_guard = self
             .model
@@ -200,8 +212,9 @@ impl PocketTTSEngine {
 
         // True streaming synthesis with callback
         let result = model.synthesize_true_streaming(&text, |samples, is_final| {
-            // Check cancellation
-            if *is_cancelled_clone.lock().unwrap() {
+            // Check cancellation (treat a poisoned lock as "keep going" —
+            // the flag is a plain bool and stays readable).
+            if *is_cancelled_clone.lock().unwrap_or_else(|p| p.into_inner()) {
                 return false;
             }
 
@@ -240,7 +253,8 @@ impl PocketTTSEngine {
 
     /// Cancel ongoing synthesis
     pub fn cancel(&self) {
-        *self.is_cancelled.lock().unwrap() = true;
+        // Cancellation must always succeed; recover the flag from a poisoned lock.
+        *self.is_cancelled.lock().unwrap_or_else(|p| p.into_inner()) = true;
     }
 
     /// Set reference audio for voice cloning

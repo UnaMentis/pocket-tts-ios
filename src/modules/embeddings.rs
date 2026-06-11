@@ -71,8 +71,18 @@ impl VoiceEmbedding {
             .or_else(|_| tensors.tensor("speaker"))
         {
             let shape = embedding_data.shape();
-            // Kyutai voice embeddings are [1, seq_len, dim] where dim is typically 1024
-            let voice_dim = shape.last().copied().unwrap_or(1024);
+            // Kyutai voice embeddings are [1, seq_len, dim] with dim = model hidden size.
+            let voice_dim = *shape
+                .last()
+                .ok_or_else(|| candle_core::Error::Msg("v1 voice embedding has an empty shape".into()))?;
+            if voice_dim != 1024 {
+                return Err(candle_core::Error::Msg(format!(
+                    "v1 voice embedding last dim is {} but the model hidden size is 1024 — \
+                     not a supported Pocket TTS voice file (expected v1 'audio_prompt' \
+                     [1, seq, 1024] or a v2 KV-state voice)",
+                    voice_dim
+                )));
+            }
 
             let candle_dtype = convert_safetensors_dtype(embedding_data.dtype())?;
             let embedding = Tensor::from_raw_buffer(embedding_data.data(), candle_dtype, shape, device)?;
@@ -102,6 +112,13 @@ impl VoiceEmbedding {
                     break;
                 };
                 let shape = cache_t.shape(); // [2, batch, seq, heads, head_dim]
+                if shape.len() != 5 || shape[0] != 2 || shape[1] != 1 {
+                    return Err(candle_core::Error::Msg(format!(
+                        "v2 voice KV cache '{}' has shape {:?}, expected [2, 1, seq, heads, head_dim] — \
+                         not a supported Pocket TTS v2 voice file",
+                        key, shape
+                    )));
+                }
                 let dtype = convert_safetensors_dtype(cache_t.dtype())?;
                 let cache = Tensor::from_raw_buffer(cache_t.data(), dtype, shape, device)?;
 
@@ -123,6 +140,13 @@ impl VoiceEmbedding {
             let num_heads = layers[0].0.dim(1)?;
             let head_dim = layers[0].0.dim(3)?;
             let voice_dim = num_heads * head_dim;
+            if voice_dim != 1024 {
+                return Err(candle_core::Error::Msg(format!(
+                    "v2 voice KV state has heads*head_dim = {}x{} = {} but the model hidden \
+                     size is 1024 — not a voice for a supported Pocket TTS 6L model",
+                    num_heads, head_dim, voice_dim
+                )));
+            }
 
             // Placeholder embedding; unused on the v2 (KV-state) path.
             let embedding = Tensor::zeros((1, voice_dim), candle_core::DType::F32, device)?;

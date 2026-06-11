@@ -439,7 +439,7 @@ impl FlowLM {
             let cond = last_hidden.unsqueeze(1)?; // [1, 1, 1024]
             let step_seed = seed.map(|s| s.wrapping_add(step as u64));
             // Offset by 1: noise_step_000 = Python's text prompting (discarded)
-            let noise_override = noise_tensors.and_then(|nt| nt.get(step + 1));
+            let noise_override = Self::noise_for_step(noise_tensors, step)?;
             let next_normalized =
                 self.flow_net
                     .generate(&cond, num_flow_steps, temperature, &self.device, step_seed, noise_override)?;
@@ -466,6 +466,30 @@ impl FlowLM {
         Tensor::cat(&all_latents, 1)
     }
 
+    /// Pick the captured noise tensor for an autoregressive step, failing LOUDLY
+    /// if noise matching was requested but the capture is too short.
+    ///
+    /// When `noise_tensors` is `Some`, the caller asked for a noise-matched
+    /// (deterministic, Python-parity) run. Silently falling back to RNG here
+    /// would produce a deterministic-but-WRONG validation result, so running
+    /// out of tensors is an error, never a fallback. `noise_step_000` is
+    /// Python's text-prompting noise (discarded), hence the +1 offset.
+    fn noise_for_step<'a>(noise_tensors: Option<&'a [Tensor]>, step: usize) -> Result<Option<&'a Tensor>> {
+        match noise_tensors {
+            None => Ok(None),
+            Some(nt) => nt.get(step + 1).map(Some).ok_or_else(|| {
+                candle_core::Error::Msg(format!(
+                    "noise-matched generation exhausted captured noise at step {}: have {} tensors, \
+                     need at least {} — the reference capture is shorter than this generation \
+                     (re-capture reference noise or check the noise_dir contents)",
+                    step,
+                    nt.len(),
+                    step + 2
+                ))
+            }),
+        }
+    }
+
     /// Phase 1 of generation: prime the KV caches with voice conditioning.
     ///
     /// Shared by `generate_latents` and `generate_latents_streaming` so the two
@@ -478,10 +502,16 @@ impl FlowLM {
     ///   `get_state_for_audio_prompt()`.
     fn prime_voice_conditioning(&mut self, voice: &VoiceEmbedding, batch_size: usize) -> Result<()> {
         if let Some(state) = voice.kv_state() {
+            if state.layers.len() != self.kv_caches.len() {
+                return Err(candle_core::Error::Msg(format!(
+                    "v2 voice KV state has {} transformer layers but the model has {} — \
+                     this voice file belongs to a different Pocket TTS variant",
+                    state.layers.len(),
+                    self.kv_caches.len()
+                )));
+            }
             for (i, (k, v)) in state.layers.iter().enumerate() {
-                if i < self.kv_caches.len() {
-                    self.kv_caches[i].set(k.clone(), v.clone());
-                }
+                self.kv_caches[i].set(k.clone(), v.clone());
             }
             log::debug!(
                 "[FlowLM] loaded v2 voice KV state ({} layers, {} positions)",
@@ -587,7 +617,7 @@ impl FlowLM {
             let step_seed = seed.map(|s| s.wrapping_add(step as u64));
             // Use pre-captured noise tensor if available for this step.
             // Offset by 1: noise_step_000 is Python's text prompting noise (discarded).
-            let noise_override = noise_tensors.and_then(|nt| nt.get(step + 1));
+            let noise_override = Self::noise_for_step(noise_tensors, step)?;
             let next_normalized =
                 self.flow_net
                     .generate(&cond, num_flow_steps, temperature, &self.device, step_seed, noise_override)?;

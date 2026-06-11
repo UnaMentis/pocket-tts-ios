@@ -1461,10 +1461,9 @@ impl MimiDecoder {
 
             // 3a. Streaming upsample: [batch, 512, 1] -> [batch, 512, 16]
             let upsampled = upsample_streaming.step(&StreamTensor::from_tensor(frame))?;
-            if upsampled.is_empty() {
+            let Some(upsampled) = upsampled.as_option() else {
                 continue;
-            }
-            let upsampled = upsampled.unwrap();
+            };
 
             // 3b. Transpose for transformer: [batch, 16, 512]
             let x = upsampled.transpose(1, 2)?;
