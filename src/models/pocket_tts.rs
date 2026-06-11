@@ -135,16 +135,14 @@ impl PocketTTSModel {
 
         let count = tensors.len();
         if count > 0 {
-            eprintln!(
-                "[PocketTTS] Loaded {} noise tensors from {:?} for {}",
-                count, noise_dir, phrase_id
+            log::debug!(
+                "[PocketTTS] loaded {} noise tensors from {:?} for {}",
+                count,
+                noise_dir,
+                phrase_id
             );
             self.noise_tensors = Some(tensors);
         } else {
-            eprintln!(
-                "[PocketTTS] WARNING: No noise tensors found for {} in {:?}",
-                phrase_id, noise_dir
-            );
             self.noise_tensors = None;
         }
         Ok(count)
@@ -247,11 +245,9 @@ impl PocketTTSModel {
     /// which has higher latency but uses NON-CAUSAL transformer attention for
     /// potentially different audio characteristics.
     pub fn synthesize(&mut self, text: &str) -> std::result::Result<Vec<f32>, PocketTTSError> {
-        eprintln!("[PocketTTS] synthesize called with text len: {}", text.len());
-
         // Tokenize text
         let token_ids = self.tokenizer.encode(text)?;
-        eprintln!("[PocketTTS] tokenized to {} tokens: {:?}", token_ids.len(), token_ids);
+        log::debug!("[PocketTTS] synthesize: {} chars -> {} tokens", text.len(), token_ids.len());
 
         // Create tensor
         let token_tensor = Tensor::from_vec(
@@ -260,7 +256,6 @@ impl PocketTTSModel {
             &self.device,
         )
         .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
-        eprintln!("[PocketTTS] token tensor shape: {:?}", token_tensor.dims());
 
         // Get voice embedding
         let voice = if let Some(ref custom) = self.custom_voice {
@@ -268,7 +263,6 @@ impl PocketTTSModel {
         } else {
             self.voice_bank.get(self.config.voice_index as usize)
         };
-        eprintln!("[PocketTTS] voice embedding loaded: {}", voice.is_some());
 
         // Reset caches for new sequence
         self.flowlm.reset_cache();
@@ -277,10 +271,6 @@ impl PocketTTSModel {
         // Reference implementation uses lsd_decode_steps = 1 (consistency model)
         // Single step is sufficient as the model is trained with consistency distillation
         let num_flow_steps = 1;
-        eprintln!(
-            "[PocketTTS] generating latents with {} flow step (consistency model)",
-            num_flow_steps
-        );
         let seed = if self.config.use_fixed_seed {
             Some(self.config.seed as u64)
         } else {
@@ -291,23 +281,6 @@ impl PocketTTSModel {
             .flowlm
             .generate_latents(&token_tensor, voice, num_flow_steps, self.config.temperature, seed, noise_ref)
             .map_err(|e| PocketTTSError::InferenceFailed(format!("FlowLM: {}", e)))?;
-        eprintln!("[PocketTTS] latents shape: {:?}", latents.dims());
-
-        // DIAGNOSTIC: Log latent statistics to verify FlowLM output quality
-        let latents_flat: Vec<f32> = latents
-            .flatten_all()
-            .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?
-            .to_vec1()
-            .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
-        let lat_mean = latents_flat.iter().sum::<f32>() / latents_flat.len() as f32;
-        let lat_max = latents_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        let lat_min = latents_flat.iter().cloned().fold(f32::INFINITY, f32::min);
-        let lat_std =
-            (latents_flat.iter().map(|x| (x - lat_mean).powi(2)).sum::<f32>() / latents_flat.len() as f32).sqrt();
-        eprintln!(
-            "[PocketTTS] latent stats: mean={:.4}, std={:.4}, min={:.4}, max={:.4}",
-            lat_mean, lat_std, lat_min, lat_max
-        );
 
         // Denormalize latents before passing to Mimi
         // Python: mimi_decoding_input = latent * emb_std + emb_mean
@@ -319,29 +292,15 @@ impl PocketTTSModel {
         // Decode to audio using streaming mode with batch transformer
         // IMPORTANT: The decoder transformer uses NON-CAUSAL attention, so it must
         // process the full sequence at once (not frame-by-frame with KV cache)
-        eprintln!("[PocketTTS] decoding with Mimi (batch transformer, streaming SEANet)...");
         let audio = self
             .mimi
             .forward_streaming(&latents)
             .map_err(|e| PocketTTSError::InferenceFailed(format!("Mimi: {}", e)))?;
-        eprintln!("[PocketTTS] audio tensor shape: {:?}", audio.dims());
-
-        // Note: Amplitude scaling is no longer needed after fixing SEANet to use batch mode
-        // which produces correct amplitude (~0.4-0.5) matching Python's streaming output
 
         // Convert to Vec<f32>
         let audio = audio.squeeze(0).map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
         let audio_vec: Vec<f32> = audio.to_vec1().map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
-
-        // Debug: check amplitude to verify audio has signal
-        let audio_max = audio_vec.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        let audio_mean = audio_vec.iter().map(|s| s.abs()).sum::<f32>() / audio_vec.len() as f32;
-        eprintln!(
-            "[PocketTTS] final audio samples: {} (expect ~78720 for test phrase)",
-            audio_vec.len()
-        );
-        eprintln!("[PocketTTS] audio max amplitude: {:.4} (expect > 0.01)", audio_max);
-        eprintln!("[PocketTTS] audio mean amplitude: {:.4}", audio_mean);
+        log::debug!("[PocketTTS] synthesize: {} audio samples", audio_vec.len());
 
         Ok(audio_vec)
     }
@@ -577,8 +536,6 @@ impl PocketTTSModel {
         let latents = Tensor::from_vec(latents_f32.to_vec(), (1, num_frames, latent_dim), &self.device)
             .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
 
-        eprintln!("[PocketTTS] decode_latents: input shape {:?}", latents.dims());
-
         // Decode with Mimi (batch transformer, streaming SEANet)
         let audio = self
             .mimi
@@ -589,8 +546,6 @@ impl PocketTTSModel {
         let audio = audio.squeeze(0).map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
         let audio_vec: Vec<f32> = audio.to_vec1().map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
 
-        eprintln!("[PocketTTS] decode_latents: output {} samples", audio_vec.len());
-
         Ok(audio_vec)
     }
 
@@ -599,11 +554,8 @@ impl PocketTTSModel {
         &mut self,
         text: &str,
     ) -> std::result::Result<(Vec<f32>, Vec<f32>, [usize; 3]), PocketTTSError> {
-        eprintln!("[PocketTTS] synthesize_with_latents called with text len: {}", text.len());
-
         // Tokenize text
         let token_ids = self.tokenizer.encode(text)?;
-        eprintln!("[PocketTTS] tokenized to {} tokens: {:?}", token_ids.len(), token_ids);
 
         // Create tensor
         let token_tensor = Tensor::from_vec(
@@ -644,8 +596,6 @@ impl PocketTTSModel {
             .to_vec1()
             .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
 
-        eprintln!("[PocketTTS] latents shape: {:?}", latent_shape);
-
         // Denormalize latents before passing to Mimi
         let latents = self
             .flowlm
@@ -669,14 +619,13 @@ impl PocketTTSModel {
     ///
     /// Same pipeline as `synthesize` but uses `forward_streaming_with_dump` to save
     /// per-block .npy files for the first N frames.
+    #[cfg(feature = "diagnostics")]
     pub fn synthesize_with_mimi_dump(
         &mut self,
         text: &str,
         dump_dir: &std::path::Path,
         dump_frames: usize,
     ) -> std::result::Result<Vec<f32>, PocketTTSError> {
-        eprintln!("[PocketTTS] synthesize_with_mimi_dump");
-
         let token_ids = self.tokenizer.encode(text)?;
         let token_tensor = Tensor::from_vec(
             token_ids.iter().map(|&id| id as i64).collect::<Vec<_>>(),

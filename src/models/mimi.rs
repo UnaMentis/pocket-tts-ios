@@ -567,6 +567,7 @@ impl DecoderTransformerLayer {
     }
 
     /// Forward with intermediate dumps for debugging
+    #[cfg(feature = "diagnostics")]
     fn forward_with_dump(
         &self,
         x: &Tensor,
@@ -820,6 +821,7 @@ impl DecoderTransformer {
         Ok(x)
     }
 
+    #[cfg(feature = "diagnostics")]
     fn forward_with_dump(&self, x: &Tensor, dump_dir: &std::path::Path) -> Result<Tensor> {
         MimiDecoder::dump_npy(dump_dir, "rs_tr_input", x)?;
         let mut x = x.clone();
@@ -1120,14 +1122,12 @@ impl MimiDecoder {
     pub fn forward_streaming(&self, latents: &Tensor) -> Result<Tensor> {
         let (batch, seq, _latent_dim) = latents.dims3()?;
         let device = latents.device();
-        eprintln!("[Mimi-Stream] Processing {} latent frames", seq);
 
         // Step 1: Transpose to [batch, latent_dim, seq] for conv
         let x = latents.transpose(1, 2)?;
 
         // Step 2: Project from latent (32) to mimi dim (512)
         let x = self.output_proj.forward(&x)?;
-        eprintln!("[Mimi-Stream] After output_proj: {:?}", x.dims());
 
         // Step 3: 16x temporal upsampling
         // Use streaming ConvTranspose1d to properly accumulate overlap-add state
@@ -1190,11 +1190,6 @@ impl MimiDecoder {
             Tensor::cat(&audio_chunks, 2)?
         };
 
-        // Log final audio stats
-        let audio_stats: Vec<f32> = audio.flatten_all()?.to_vec1()?;
-        let max_amp = audio_stats.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        eprintln!("[Mimi-Stream] Final audio shape {:?}, max={:.4}", audio.dims(), max_amp);
-
         // Squeeze channel dim: [batch, 1, samples] -> [batch, samples]
         audio.squeeze(1)
     }
@@ -1203,6 +1198,7 @@ impl MimiDecoder {
     ///
     /// Same architecture as `forward_streaming` (streaming upsample, batch transformer,
     /// streaming SEANet) but saves per-block .npy files for the first `dump_frames` frames.
+    #[cfg(feature = "diagnostics")]
     pub fn forward_streaming_with_dump(
         &self,
         latents: &Tensor,
@@ -1297,6 +1293,7 @@ impl MimiDecoder {
     }
 
     /// SEANet forward with per-layer dumps
+    #[cfg(feature = "diagnostics")]
     fn seanet_forward_with_dump(
         &self,
         x: &Tensor,
@@ -1343,6 +1340,7 @@ impl MimiDecoder {
     }
 
     /// Dump a tensor to .npy format for comparison with Python
+    #[cfg(feature = "diagnostics")]
     fn dump_npy(dir: &std::path::Path, name: &str, tensor: &Tensor) -> Result<()> {
         let flat: Vec<f32> = tensor.flatten_all()?.to_vec1()?;
         let dims = tensor.dims();
@@ -1431,7 +1429,6 @@ impl MimiDecoder {
 
         let (batch, seq, _latent_dim) = latents.dims3()?;
         let device = latents.device();
-        eprintln!("[Mimi-TrueStream] Processing {} latent frames", seq);
 
         // Step 1: Transpose to [batch, latent_dim, seq] for conv
         let x = latents.transpose(1, 2)?;
@@ -1439,7 +1436,6 @@ impl MimiDecoder {
         // Step 2: Project from latent (32) to mimi dim (512)
         // output_proj has k=1, so it's stateless
         let x = self.output_proj.forward(&x)?;
-        eprintln!("[Mimi-TrueStream] After output_proj: {:?}", x.dims());
 
         // Step 3: Create streaming upsample convtr
         let mut upsample_streaming = StreamableConvTranspose1d::from_weights(
@@ -1494,11 +1490,6 @@ impl MimiDecoder {
             Tensor::cat(&audio_chunks, 2)?
         };
 
-        // Log final audio stats
-        let audio_stats: Vec<f32> = audio.flatten_all()?.to_vec1()?;
-        let max_amp = audio_stats.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        eprintln!("[Mimi-TrueStream] Final audio shape {:?}, max={:.4}", audio.dims(), max_amp);
-
         // Squeeze channel dim: [batch, 1, samples] -> [batch, samples]
         audio.squeeze(1)
     }
@@ -1519,49 +1510,28 @@ impl MimiDecoder {
     pub fn forward(&self, latents: &Tensor) -> Result<Tensor> {
         // Step 1: Transpose to [batch, latent_dim, seq] for conv
         let x = latents.transpose(1, 2)?;
-        eprintln!("[Mimi] after input transpose: {:?}", x.dims());
 
         // Step 2: Project from latent (32) to mimi dim (512)
         let x = self.output_proj.forward(&x)?;
-        Self::log_tensor_stats("output_proj", &x)?;
 
         // Step 3: 16x temporal upsampling (BEFORE transformer!)
         // This brings frame rate from 12.5 Hz to 200 Hz
         let x = self.upsample_convtr.forward(&x)?;
-        Self::log_tensor_stats("upsample", &x)?;
-        eprintln!("[Mimi] post-upsample shape: {:?}", x.dims());
 
         // Step 4: Transpose for transformer: [batch, seq*16, dim]
         let x = x.transpose(1, 2)?;
 
         // Step 5: Decoder transformer
         let x = self.decoder_transformer.forward(&x)?;
-        Self::log_tensor_stats("decoder_transformer", &x)?;
 
         // Step 6: Transpose for convolutions: [batch, dim, seq*16]
         let x = x.transpose(1, 2)?;
-        eprintln!("[Mimi] pre-seanet shape: {:?}", x.dims());
 
         // Step 7: SEANet decoder to waveform (120x upsampling: 200 Hz -> 24kHz)
         let audio = self.seanet.forward(&x)?;
-        Self::log_tensor_stats("seanet_output", &audio)?;
 
         // Squeeze channel dim: [batch, 1, samples] -> [batch, samples]
         audio.squeeze(1)
-    }
-
-    /// Log tensor statistics for debugging
-    fn log_tensor_stats(name: &str, tensor: &Tensor) -> Result<()> {
-        let flat: Vec<f32> = tensor.flatten_all()?.to_vec1()?;
-        let mean = flat.iter().sum::<f32>() / flat.len() as f32;
-        let max_val = flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        let min_val = flat.iter().cloned().fold(f32::INFINITY, f32::min);
-        let std = (flat.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / flat.len() as f32).sqrt();
-        eprintln!(
-            "[Mimi] {}: mean={:.4}, std={:.4}, range=[{:.4}, {:.4}]",
-            name, mean, std, min_val, max_val
-        );
-        Ok(())
     }
 
     /// Decode with overlap-add for streaming

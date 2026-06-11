@@ -544,14 +544,23 @@ fn run_single_phrase(
     let start = Instant::now();
 
     let (audio, latents_data, latent_shape) = if let Some(dump_dir) = dump_mimi_dir {
-        // Use synthesize_with_mimi_dump to dump intermediates
-        println!("  Dumping Mimi intermediates to: {}", dump_dir.display());
-        match model.synthesize_with_mimi_dump(test_text, dump_dir, 2) {
-            Ok(a) => (a, None, None),
-            Err(e) => {
-                eprintln!("ERROR: Synthesis with dump failed: {:?}", e);
-                std::process::exit(1);
-            },
+        #[cfg(feature = "diagnostics")]
+        {
+            // Use synthesize_with_mimi_dump to dump intermediates
+            println!("  Dumping Mimi intermediates to: {}", dump_dir.display());
+            match model.synthesize_with_mimi_dump(test_text, dump_dir, 2) {
+                Ok(a) => (a, None, None),
+                Err(e) => {
+                    eprintln!("ERROR: Synthesis with dump failed: {:?}", e);
+                    std::process::exit(1);
+                },
+            }
+        }
+        #[cfg(not(feature = "diagnostics"))]
+        {
+            let _ = dump_dir;
+            eprintln!("ERROR: --dump-mimi requires a build with `--features diagnostics`");
+            std::process::exit(1);
         }
     } else if export_latents_path.is_some() {
         // Use synthesize_with_latents to get both audio and latents

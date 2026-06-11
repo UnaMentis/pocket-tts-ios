@@ -62,6 +62,10 @@ uniffi = { version = "0.28", features = ["build"] }
 default = []
 metal = ["candle-core/metal"]
 streaming = ["tokio"]
+# Numerical-parity tooling: .npy tensor dumps for layer-by-layer comparison
+# against the Python reference (validation/). Off by default; not part of
+# release builds.
+diagnostics = []
 
 [[bin]]
 name = "uniffi-bindgen"

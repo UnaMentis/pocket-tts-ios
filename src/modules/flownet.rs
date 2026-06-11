@@ -47,24 +47,12 @@ impl TimeEmbedding {
         // Load pre-computed frequencies
         let freqs = vb.get((128,), "freqs")?;
 
-        // DIAGNOSTIC: Log frequency range
-        let freqs_vec: Vec<f32> = freqs.to_vec1()?;
-        let f_min = freqs_vec.iter().cloned().fold(f32::INFINITY, f32::min);
-        let f_max = freqs_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        eprintln!("[TimeEmbed] freqs range: [{:.2}, {:.2}]", f_min, f_max);
-
         // MLP: 256 -> 512 -> 512
         let mlp_0 = candle_nn::linear(256, hidden_dim, vb.pp("mlp.0"))?;
         let mlp_2 = candle_nn::linear(hidden_dim, hidden_dim, vb.pp("mlp.2"))?;
 
         // Learnable scale parameter for RMSNorm (NOT just a simple multiply!)
         let alpha = vb.get((hidden_dim,), "mlp.3.alpha")?;
-
-        // DIAGNOSTIC: Log alpha range
-        let alpha_vec: Vec<f32> = alpha.to_vec1()?;
-        let a_min = alpha_vec.iter().cloned().fold(f32::INFINITY, f32::min);
-        let a_max = alpha_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        eprintln!("[TimeEmbed] alpha range: [{:.4}, {:.4}]", a_min, a_max);
 
         Ok(Self {
             freqs,
@@ -230,35 +218,12 @@ impl FinalLayer {
         // Python order: shift, scale
         let (shift, scale) = self.adaln.forward(cond)?;
 
-        // DIAGNOSTIC: Check shift/scale
-        static DIAG_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let count = DIAG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if count < 3 {
-            let shift_flat: Vec<f32> = shift.flatten_all()?.to_vec1()?;
-            let scale_flat: Vec<f32> = scale.flatten_all()?.to_vec1()?;
-            let shift_min = shift_flat.iter().cloned().fold(f32::INFINITY, f32::min);
-            let shift_max = shift_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            let scale_min = scale_flat.iter().cloned().fold(f32::INFINITY, f32::min);
-            let scale_max = scale_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            eprintln!(
-                "[FinalLayer] shift range=[{:.4}, {:.4}], scale range=[{:.4}, {:.4}]",
-                shift_min, shift_max, scale_min, scale_max
-            );
-        }
-
         // Python's FinalLayer applies modulation AFTER norm_final (which has no affine)
         // modulate(norm_final(x), shift, scale) = norm(x) * (1 + scale) + shift
         // norm_final uses eps=1e-6 (typical for layer norm in this codebase)
         let h = layer_norm_no_affine(x, 1e-6)?;
         let h = h.broadcast_mul(&(scale + 1.0)?)?;
         let h = h.broadcast_add(&shift)?;
-
-        if count < 3 {
-            let h_flat: Vec<f32> = h.flatten_all()?.to_vec1()?;
-            let h_min = h_flat.iter().cloned().fold(f32::INFINITY, f32::min);
-            let h_max = h_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            eprintln!("[FinalLayer] after modulation: range=[{:.4}, {:.4}]", h_min, h_max);
-        }
 
         // Project to latent
         self.linear.forward(&h)
@@ -338,21 +303,10 @@ impl FlowNet {
         // Get conditioning embedding
         let cond = self.cond_embed.forward(hidden)?; // [batch, seq, 512]
 
-        // DIAGNOSTIC: Log conditioning stats
-        let cond_flat: Vec<f32> = cond.flatten_all()?.to_vec1()?;
-        let c_mean = cond_flat.iter().sum::<f32>() / cond_flat.len() as f32;
-        let c_std = (cond_flat.iter().map(|x| (x - c_mean).powi(2)).sum::<f32>() / cond_flat.len() as f32).sqrt();
-        eprintln!(
-            "[FlowNet] conditioning (after cond_embed) first 8: {:?}",
-            &cond_flat[..8.min(cond_flat.len())]
-        );
-        eprintln!("[FlowNet] conditioning: mean={:.4}, std={:.4}", c_mean, c_std);
-
         // Start from noise (x_0 in LSD notation)
         // If noise_override is provided (from captured Python noise tensors),
         // use it directly to eliminate RNG differences for correlation testing.
         let mut current = if let Some(noise) = noise_override {
-            eprintln!("[FlowNet] Using pre-captured noise tensor (shape: {:?})", noise.dims());
             // Python noise is (batch, ldim) i.e. (1, 32) — reshape to (batch, 1, ldim)
             if noise.dims().len() == 2 {
                 noise.unsqueeze(1)?
@@ -397,37 +351,8 @@ impl FlowNet {
             // Get velocity prediction using both s and t
             let velocity = self.forward_step(&current, &cond, &s_tensor, &t_tensor)?;
 
-            // DIAGNOSTIC: Log velocity stats at first and last steps
-            if step == 0 || step == num_steps - 1 {
-                let vel_flat: Vec<f32> = velocity.flatten_all()?.to_vec1()?;
-                let v_mean = vel_flat.iter().sum::<f32>() / vel_flat.len() as f32;
-                let v_max = vel_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                if step == 0 {
-                    eprintln!("[FlowNet-Step0] velocity first 8: {:?}", &vel_flat[..8.min(vel_flat.len())]);
-                }
-                eprintln!(
-                    "[FlowNet] step {} (s={:.3}, t={:.3}): vel mean={:.4}, max={:.4}",
-                    step, s, t, v_mean, v_max
-                );
-            }
-
             // LSD Euler step: current += flow_dir / num_steps
             current = (current + (velocity * dt as f64)?)?;
-        }
-
-        // DIAGNOSTIC: Log final latent stats
-        static FLOWNET_STEP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let step = FLOWNET_STEP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let lat_flat: Vec<f32> = current.flatten_all()?.to_vec1()?;
-        let l_mean = lat_flat.iter().sum::<f32>() / lat_flat.len() as f32;
-        let l_std = (lat_flat.iter().map(|x| (x - l_mean).powi(2)).sum::<f32>() / lat_flat.len() as f32).sqrt();
-        if step == 0 {
-            eprintln!("[FlowNet-Step0] final latent first 8: {:?}", &lat_flat[..8.min(lat_flat.len())]);
-            eprintln!("[FlowNet-Step0] mean={:.4}, std={:.4}", l_mean, l_std);
-            // Python: first 8: [-1.7723137, -0.8588331, 0.23708725, 1.6371508, -1.6427871, 1.103927, -1.926453, 1.8970976]
-            // Python: mean=-0.051385, std=1.170856
-        } else {
-            eprintln!("[FlowNet] final latent: mean={:.4}, std={:.4}", l_mean, l_std);
         }
 
         Ok(current)
@@ -443,93 +368,27 @@ impl FlowNet {
         // Project input latent (NO time added here - Python doesn't add time to x!)
         let h = self.input_proj.forward(x)?;
 
-        let s_val: f32 = s.to_vec1()?[0];
-        let t_val: f32 = t.to_vec1()?[0];
-
-        // DIAGNOSTIC: Log input projection output at step 0
-        if s_val < 0.01 {
-            let h_flat: Vec<f32> = h.flatten_all()?.to_vec1()?;
-            eprintln!("[FlowNet-Step0] after input_proj first 8: {:?}", &h_flat[..8.min(h_flat.len())]);
-        }
-
         // Embed start time (s) with time_embed_0
         let time_emb_s = self.time_embed_0.forward(s)?;
         // Embed target time (t) with time_embed_1
         let time_emb_t = self.time_embed_1.forward(t)?;
 
-        // DIAGNOSTIC: Log individual time embeddings at step 0
-        if s_val < 0.01 {
-            let te_s_flat: Vec<f32> = time_emb_s.flatten_all()?.to_vec1()?;
-            let te_t_flat: Vec<f32> = time_emb_t.flatten_all()?.to_vec1()?;
-            eprintln!(
-                "[FlowNet-Step0] time_embed_s (s=0) first 8: {:?}",
-                &te_s_flat[..8.min(te_s_flat.len())]
-            );
-            eprintln!(
-                "[FlowNet-Step0] time_embed_t (t=1) first 8: {:?}",
-                &te_t_flat[..8.min(te_t_flat.len())]
-            );
-        }
-
         // AVERAGE the two time embeddings (this is critical for LSD!)
         // Python: sum(time_embed[i](ts[i]) for i in range(num_time_conds)) / num_time_conds
         let time_emb_avg = ((time_emb_s + time_emb_t)? * 0.5)?;
-
-        // DIAGNOSTIC: Check time embedding
-        if s_val < 0.01 || t_val > 0.99 {
-            let te_flat: Vec<f32> = time_emb_avg.flatten_all()?.to_vec1()?;
-            let te_mean = te_flat.iter().sum::<f32>() / te_flat.len() as f32;
-            let te_max = te_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            eprintln!(
-                "[FlowNet] s={:.3}, t={:.3}: avg_time_emb mean={:.6}, max={:.4}",
-                s_val, t_val, te_mean, te_max
-            );
-            eprintln!("[FlowNet-Step0] avg_time_emb first 8: {:?}", &te_flat[..8.min(te_flat.len())]);
-        }
 
         // Python: y = t_combined + c (time only added to conditioning, NOT to x!)
         // The time embedding is broadcast to match [batch, seq, hidden]
         let cond_combined = cond.broadcast_add(&time_emb_avg.unsqueeze(1)?)?;
 
-        // DIAGNOSTIC: Log combined conditioning at step 0
-        if s_val < 0.01 {
-            let cc_flat: Vec<f32> = cond_combined.flatten_all()?.to_vec1()?;
-            eprintln!(
-                "[FlowNet-Step0] cond_combined (c + time) first 8: {:?}",
-                &cc_flat[..8.min(cc_flat.len())]
-            );
-        }
-
         // Residual blocks
         let mut h = h;
-        for (i, block) in self.res_blocks.iter().enumerate() {
+        for block in &self.res_blocks {
             h = block.forward(&h, &cond_combined)?;
-            // DIAGNOSTIC: Check for value explosion
-            if s_val < 0.01 && i == 0 {
-                let h_flat: Vec<f32> = h.flatten_all()?.to_vec1()?;
-                let h_mean = h_flat.iter().sum::<f32>() / h_flat.len() as f32;
-                let h_max = h_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                let h_min = h_flat.iter().cloned().fold(f32::INFINITY, f32::min);
-                eprintln!(
-                    "[FlowNet] after ResBlock 0: mean={:.4}, range=[{:.4}, {:.4}]",
-                    h_mean, h_min, h_max
-                );
-            }
         }
 
         // Final layer outputs velocity
-        let velocity = self.final_layer.forward(&h, &cond_combined)?;
-        if s_val < 0.01 {
-            let v_flat: Vec<f32> = velocity.flatten_all()?.to_vec1()?;
-            let v_mean = v_flat.iter().sum::<f32>() / v_flat.len() as f32;
-            let v_min = v_flat.iter().cloned().fold(f32::INFINITY, f32::min);
-            let v_max = v_flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            eprintln!(
-                "[FlowNet] velocity after FinalLayer: mean={:.4}, range=[{:.4}, {:.4}]",
-                v_mean, v_min, v_max
-            );
-        }
-        Ok(velocity)
+        self.final_layer.forward(&h, &cond_combined)
     }
 
     pub fn config(&self) -> &FlowNetConfig {

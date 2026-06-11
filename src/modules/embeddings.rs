@@ -21,20 +21,7 @@ impl TextEmbedding {
     }
 
     pub fn forward(&self, token_ids: &Tensor) -> Result<Tensor> {
-        let result = self.embedding.forward(token_ids)?;
-
-        // Debug: print first few embedding values
-        if let Ok(flat) = result.flatten_all() {
-            if let Ok(vals) = flat.to_vec1::<f32>() {
-                let first8: Vec<f32> = vals.iter().take(8).cloned().collect();
-                let mean: f32 = vals.iter().sum::<f32>() / vals.len() as f32;
-                let std: f32 = (vals.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / vals.len() as f32).sqrt();
-                eprintln!("[TextEmbed] first 8: {:?}", first8);
-                eprintln!("[TextEmbed] mean: {:.6}, std: {:.4}", mean, std);
-            }
-        }
-
-        Ok(result)
+        self.embedding.forward(token_ids)
     }
 
     pub fn hidden_size(&self) -> usize {
