@@ -16,6 +16,8 @@ targets:
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.unamentis.PocketTTSDemo
       INFOPLIST_FILE: PocketTTSDemo/Info.plist
+      CODE_SIGN_STYLE: Automatic
+      DEVELOPMENT_TEAM: YULZMCHT8T
       SWIFT_VERSION: "5.9"
       ENABLE_USER_SCRIPT_SANDBOXING: NO
       OTHER_LDFLAGS: ["-lc++"]
