@@ -49,8 +49,13 @@ The following are original contributions by UnaMentis:
 
 ## License Compliance
 
-All components are MIT-licensed and compatible:
-- Kyutai model code: MIT
+**Code is MIT-licensed; the Kyutai model weights are not.** The two must be
+tracked separately:
+
+- Kyutai model **code** (reference implementation): MIT
+- Kyutai model **weights**: **CC-BY-4.0** — redistribution is permitted but
+  **requires attribution** to Kyutai Labs. Any release artifact that bundles the
+  weights must carry this attribution.
 - babybirdprd/pocket-tts: MIT
 - Candle ML framework: Apache 2.0 / MIT dual license
 - UnaMentis iOS integration: MIT

@@ -52,7 +52,7 @@ See [tests/ios-harness/README.md](tests/ios-harness/README.md) for setup instruc
 ├─────────────────────────────────────────────────┤
 │         Generated Swift Bindings (UniFFI)        │
 ├─────────────────────────────────────────────────┤
-│               PocketTTSEngine                    │
+│               PocketTtsEngine                    │
 ├─────────────────────────────────────────────────┤
 │  FlowLM    │   MLPSampler   │   MimiDecoder    │
 │ (70M)      │    (10M)       │     (20M)        │
@@ -89,14 +89,16 @@ This creates:
 
 ```swift
 import Foundation
+import AVFoundation
 
-// Initialize engine with model path
-let modelPath = Bundle.main.path(forResource: "kyutai-pocket-ios", ofType: nil)!
-let engine = try PocketTTSEngine(modelPath: modelPath)
+// Initialize engine with the model directory bundled as "Models"
+// (contains model.safetensors, tokenizer.model, voices/). See docs/INTEGRATION.md.
+let modelPath = Bundle.main.path(forResource: "Models", ofType: nil)!
+let engine = try PocketTtsEngine(modelPath: modelPath)
 
-// Configure
-let config = TTSConfig(
-    voiceIndex: 0,  // Alba
+// Configure. TtsConfig has no default field values — all fields are required.
+let config = TtsConfig(
+    voiceIndex: 0,          // 0 = Alba
     temperature: 0.7,
     topP: 0.9,
     speed: 1.0,
@@ -106,10 +108,18 @@ let config = TTSConfig(
 )
 try engine.configure(config: config)
 
-// Synthesize
+// Synthesize. result.audioData is a COMPLETE WAV file (Int16 PCM, 24 kHz, mono).
 let result = try engine.synthesize(text: "Hello, world!")
-// result.audioData contains WAV bytes
+
+// Play it directly — AVAudioPlayer reads the WAV header.
+let player = try AVAudioPlayer(data: result.audioData)
+player.play()
 ```
+
+> Prefer sensible defaults? Use the `PocketTTSSwift` actor wrapper
+> (`init(modelPath:)` then `load()`), whose `Config` presets supply defaults.
+> See [docs/INTEGRATION.md](docs/INTEGRATION.md) for the wrapper, streaming
+> (raw PCM chunks), and `PocketTtsError` handling.
 
 ## Model Files
 
@@ -179,19 +189,33 @@ Hugging Face.
 
 ## Performance
 
-Measured with release builds in streaming mode:
+> **No physical-device measurements exist yet.** Every number below was
+> measured on either an Apple-silicon **Mac host** or the **iOS Simulator** —
+> neither reflects real-iPhone performance. A device smoke test (load +
+> synthesize on a physical iPhone) is a hard pre-release gate; see
+> [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
-| Metric | v2 (english_2026-04) | v1 (english_2026-01) | Where / When |
-|--------|----------------------|----------------------|--------------|
-| TTFA (avg) | **137ms** (short 147 / medium 118 / long 146ms) | 252ms | Apple-silicon Mac (host), 2026-06-11 |
-| RTF | **2.94x** | 2.64x | Apple-silicon Mac (host), 2026-06-11 |
-| TTFA | 159ms | — | iPhone 17 Pro simulator, 2026-06-06 |
-| RTF | 2.70x streaming / 3.20x sync | — | iPhone 17 Pro simulator, 2026-06-06 |
-| Model load | 0.29s | — | iPhone 17 Pro simulator, 2026-06-06 |
+**Mac host (Apple silicon), release build, streaming mode, 2026-06-11** — this
+is a development-machine measurement, not iOS:
+
+| Metric | v2 (english_2026-04) | v1 (english_2026-01) |
+|--------|----------------------|----------------------|
+| TTFA (avg) | 137ms (short 147 / medium 118 / long 146ms) | 252ms |
+| RTF | 2.94x | 2.64x |
+
+**iOS Simulator (iPhone 17 Pro sim, not a physical device), 2026-06-06** — v2 only:
+
+| Metric | Value |
+|--------|-------|
+| TTFA | 159ms (streaming) |
+| RTF | 2.70x streaming / 3.20x sync |
+| Model load | 0.29s |
 
 v1 is slower to first audio because v1 voices run a 125-position prompt
 through the transformer at synthesis start; v2 voices are precomputed KV
-states. Memory usage is ~150MB during inference.
+states. Memory usage is ~150MB during inference on the host; on device expect a
+higher resident footprint (~470MB) once F32 weights are loaded — see
+[docs/INTEGRATION.md](docs/INTEGRATION.md) Deployment notes.
 
 ### Latency Benchmarking
 

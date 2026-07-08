@@ -193,7 +193,7 @@ public actor PocketTTSSwift {
 
             Task {
                 do {
-                    try engine.startStreaming(text: text, handler: handler)
+                    try engine.startTrueStreaming(text: text, handler: handler)
                 } catch {
                     continuation.finish(throwing: error)
                 }

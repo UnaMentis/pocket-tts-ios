@@ -362,7 +362,7 @@ After rebuilding the Rust library:
 ./scripts/build-ios.sh
 
 # Copy to harness
-cp -r output/PocketTTS.xcframework tests/ios-harness/PocketTTSDemo/Frameworks/
+cp -r target/xcframework/PocketTTS.xcframework tests/ios-harness/PocketTTSDemo/Frameworks/
 
 # Regenerate and rebuild
 cd tests/ios-harness/PocketTTSDemo

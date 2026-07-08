@@ -25,6 +25,7 @@ Usage:
 import argparse
 import os
 import shutil
+import sys
 from pathlib import Path
 
 try:
@@ -181,6 +182,13 @@ def main():
         help="Directory to save model files (default: ./models/kyutai-pocket-ios for v1, "
         "./kyutai-pocket-ios-en2026-04 for v2)",
     )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Re-download without prompting if the model already exists "
+        "(safe for non-interactive / CI runs)",
+    )
 
     args = parser.parse_args()
     output_dir = args.output_dir
@@ -191,10 +199,19 @@ def main():
 
     if (output_dir / "model.safetensors").exists():
         print(f"Model already exists at {output_dir}")
-        response = input("Re-download? [y/N] ").strip().lower()
-        if response != "y":
-            print("Skipping download.")
+        if args.yes:
+            print("--yes given: re-downloading.")
+        elif not sys.stdin.isatty():
+            # Non-interactive (CI, piped stdin): never block on input(), which
+            # would raise EOFError. Default to keeping the existing file.
+            print("Non-interactive session: keeping existing model "
+                  "(pass --yes to force re-download). Skipping download.")
             return
+        else:
+            response = input("Re-download? [y/N] ").strip().lower()
+            if response != "y":
+                print("Skipping download.")
+                return
 
     if args.model == "v1":
         download_v1(output_dir)

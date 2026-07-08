@@ -6,9 +6,16 @@ on:
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-*'  # Pre-release tags like v0.4.0-beta
   workflow_dispatch:
+    # Dispatch runs are DRY-RUN ONLY: they build and validate but never publish
+    # a GitHub Release (see the `release` job's `if:`). This prevents a human
+    # from minting a mistagged release straight off default-branch HEAD.
     inputs:
       version:
-        description: 'Version to release (e.g., 0.4.0)'
+        description: 'Version to build (e.g., 0.5.0) — dry-run only, does not publish'
+        required: true
+        type: string
+      ref:
+        description: 'Exact git ref (tag/branch/SHA) to check out and build'
         required: true
         type: string
 
@@ -24,6 +31,10 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # On tag-push this input is empty and checkout uses the triggering
+          # tag; on workflow_dispatch it pins the exact ref the human named.
+          ref: ${{ github.event.inputs.ref }}
 
       - name: Extract version
         id: version
@@ -57,19 +68,47 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios, aarch64-apple-ios-sim
+          components: clippy, rustfmt
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           key: ios-release
 
+      # QUALITY GATES (fail-closed): a release must not be built from code that
+      # fails formatting, lint, or tests. No continue-on-error, no `|| true`.
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test
+
       - name: Build XCFramework
         run: ./scripts/build-ios.sh
+
+      # DRIFT GATE (fail-closed): semantically typecheck the freshly generated
+      # UniFFI bindings TOGETHER with the shipped high-level wrapper, importing
+      # the generated FFI module map. If the wrapper references an API the
+      # regenerated bindings no longer expose (or vice versa), this fails the
+      # release instead of shipping a broken Sources/ directory. (-typecheck,
+      # not -parse: -parse is syntax-only and misses missing-method drift.)
+      - name: Check bindings/wrapper API drift
+        run: |
+          swiftc -typecheck \
+            -sdk "$(xcrun --show-sdk-path --sdk macosx)" \
+            -I target/xcframework/headers \
+            target/xcframework/pocket_tts_ios.swift \
+            swift/PocketTTSSwift.swift
 
       - name: Download model files from HuggingFace
         run: |
@@ -101,6 +140,27 @@ jobs:
           chmod +x scripts/package-release.sh
           ./scripts/package-release.sh "${{ needs.validate.outputs.version }}"
 
+      # PROVENANCE CHECK: confirm the packaged BUILD_INFO.txt records the same
+      # commit this workflow is running against. On tag-push GITHUB_SHA is the
+      # commit the tag points to; the packaged git_sha must match it exactly.
+      - name: Verify BUILD_INFO provenance
+        if: github.event_name == 'push'
+        run: |
+          RELEASE_DIR="release/PocketTTS-v${{ needs.validate.outputs.version }}"
+          BUILD_INFO="$RELEASE_DIR/BUILD_INFO.txt"
+          if [ ! -f "$BUILD_INFO" ]; then
+            echo "Error: $BUILD_INFO not found"
+            exit 1
+          fi
+          PACKAGED_SHA=$(grep '^git_sha:' "$BUILD_INFO" | awk '{print $2}')
+          echo "Packaged git_sha: $PACKAGED_SHA"
+          echo "GITHUB_SHA:       $GITHUB_SHA"
+          if [ "$PACKAGED_SHA" != "$GITHUB_SHA" ]; then
+            echo "Error: BUILD_INFO.txt git_sha ($PACKAGED_SHA) != GITHUB_SHA ($GITHUB_SHA)"
+            exit 1
+          fi
+          echo "Provenance verified."
+
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
@@ -113,6 +173,9 @@ jobs:
   release:
     name: Create GitHub Release
     needs: [validate, build]
+    # Publish ONLY on tag-push. workflow_dispatch runs are dry-run: they build
+    # and validate the artifact but never create a GitHub Release.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write

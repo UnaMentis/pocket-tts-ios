@@ -52,7 +52,7 @@ impl PocketTTSEngine {
 
     /// Get model version
     pub fn model_version(&self) -> String {
-        "1.0.2".to_string()
+        env!("CARGO_PKG_VERSION").to_string()
     }
 
     /// Get parameter count
@@ -207,14 +207,13 @@ impl PocketTTSEngine {
         let model = model_guard.as_mut().ok_or(PocketTTSError::ModelNotLoaded)?;
 
         let sample_rate = model.sample_rate();
-        let is_cancelled = Arc::new(Mutex::new(false));
-        let is_cancelled_clone = is_cancelled.clone();
 
         // True streaming synthesis with callback
         let result = model.synthesize_true_streaming(&text, |samples, is_final| {
-            // Check cancellation (treat a poisoned lock as "keep going" —
-            // the flag is a plain bool and stays readable).
-            if *is_cancelled_clone.lock().unwrap_or_else(|p| p.into_inner()) {
+            // Check cancellation via the engine flag that cancel() sets.
+            // (Treat a poisoned lock as "keep going" — the flag is a plain
+            // bool and stays readable.)
+            if *self.is_cancelled.lock().unwrap_or_else(|p| p.into_inner()) {
                 return false;
             }
 

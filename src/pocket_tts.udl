@@ -5,6 +5,10 @@ namespace pocket_tts_ios {
     // Library version
     string version();
 
+    // Build provenance: version, git SHA (+dirty), tag, UTC build time.
+    // Log this at engine init so any field build is traceable to its commit.
+    string build_info();
+
     // Available voices
     sequence<PocketVoiceInfo> available_voices();
 };

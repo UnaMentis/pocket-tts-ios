@@ -5,8 +5,13 @@ multilingual 6L (`italian`, `german`, `spanish`, `portuguese`) — **without los
 waveform correlation** we achieved on `english_2026-01`.
 
 **Status:** ✅ english_2026-04 COMPLETE — validated to 1.000 correlation (all 4 phrases, host +
-on-device, §5d–5f), shipped in v0.5.0. Multilingual (it/de/es/pt) is a per-language weight +
-tokenizer + voice swap (§5d "Implication"), tracked on the `feature/multilingual-v2` branch.
+on-device (iOS Simulator), §5d–5f), shipped in v0.5.0. Multilingual (it/de/es/pt) is a per-language
+weight + tokenizer + voice swap (§5d "Implication"), tracked on the `feature/multilingual-v2` branch.
+
+> **"On-device" below means the iOS Simulator, not a physical iPhone.**
+> Physical-device validation (engine load + synthesize on real hardware) has
+> **not** yet been performed and is a hard release gate — see
+> [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
 
 | Model | Status | Noise-matched correlation |
 |---|---|---|
@@ -194,7 +199,12 @@ weights + tokenizer (+ v2 KV-state voices). So it/de/es/pt should work by assemb
 language — likely zero further code changes. Config-driven refactor is now a maintainability/explicitness
 improvement (dim-assertions, model identity), not required for correctness.
 
-## 5e. ✅ On-device iOS E2E verification (2026-06-06, iPhone 17 Pro sim)
+## 5e. ✅ On-device (iOS Simulator) E2E verification (2026-06-06, iPhone 17 Pro sim)
+
+> "On-device" in this section means the **iOS Simulator**, not a physical iPhone.
+> Physical-device validation has not been performed and is a release gate
+> ([RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)).
+
 Clean XCFramework rebuild (`cargo clean && build-ios.sh`) → copied framework+bindings into demo →
 bundled `Models/` = english_2026-04 (209M weights + v2 alba KV-state) and `ReferenceAudio/` = v2 Int16
 refs+manifest → cleared derived data → built+installed+launched. Drove the app via simulator UI:
@@ -215,7 +225,7 @@ The numerical 1.000 parity is the *host noise-matched* measurement (§5d); on-de
 functional + latency + the user's ear-check (all pass). To make the app itself a numerical gate, expose
 a noise-injection synth path over UniFFI and bundle the captured noise (future enhancement).
 
-## 5f. ✅ Test client brought into compliance — on-device noise-matched gate = 1.0000 (2026-06-06)
+## 5f. ✅ Test client brought into compliance — on-device (iOS Simulator) noise-matched gate = 1.0000 (2026-06-06)
 The demo's Compare tab was out of sync with our standard (it synthesized with *random* noise → ~0
 correlation vs the fixed-noise Python reference, reading "-0.05 Very poor"). Fixed by adding a
 noise-matched path end-to-end:

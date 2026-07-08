@@ -80,11 +80,19 @@ jobs:
           name: PocketTTS-XCFramework
           path: target/xcframework
 
-      - name: Check Swift syntax
+      - name: Check bindings/wrapper API drift
         run: |
-          # Basic syntax check on generated Swift
-          if [ -f "target/xcframework/pocket_tts_ios.swift" ]; then
-            echo "Checking Swift syntax..."
-            swiftc -parse target/xcframework/pocket_tts_ios.swift 2>&1 || true
-            echo "Note: Parse errors are expected without the XCFramework imported"
+          # Fail-closed drift gate: semantically typecheck the generated
+          # bindings TOGETHER with the shipped high-level wrapper, importing
+          # the generated FFI module map. Catches missing-method drift that a
+          # syntax-only `-parse` would miss (no `|| true`).
+          if [ ! -f "target/xcframework/pocket_tts_ios.swift" ]; then
+            echo "Error: generated bindings not found"
+            exit 1
           fi
+          echo "Typechecking bindings + wrapper..."
+          swiftc -typecheck \
+            -sdk "$(xcrun --show-sdk-path --sdk macosx)" \
+            -I target/xcframework/headers \
+            target/xcframework/pocket_tts_ios.swift \
+            swift/PocketTTSSwift.swift

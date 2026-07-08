@@ -81,6 +81,18 @@ impl PocketTTSModel {
         let voice_bank = VoiceBank::load_from_dir(&voices_dir, device)
             .map_err(|e| PocketTTSError::ModelLoadFailed(format!("Failed to load voices: {}", e)))?;
 
+        // An empty voice bank would not fail here, but every synthesis would
+        // then run without speaker conditioning and produce garbled audio with
+        // no diagnostic. Fail at load with the resolved path instead.
+        if voice_bank.is_empty() {
+            return Err(PocketTTSError::ModelLoadFailed(format!(
+                "No voice embeddings found in {} (expected files like alba.safetensors; \
+                 check the directory exists and file names are lowercase — device \
+                 filesystems are case-sensitive)",
+                voices_dir.display()
+            )));
+        }
+
         // Initialize model components
         let flowlm_config = FlowLMConfig::default();
         let flowlm = FlowLM::new(flowlm_config.clone(), vb.pp("flow_lm"), device)
@@ -103,6 +115,27 @@ impl PocketTTSModel {
             custom_voice: None,
             noise_tensors: None,
         })
+    }
+
+    /// Resolve the active voice embedding: the custom voice if set, otherwise
+    /// the configured `voice_index` from the voice bank.
+    ///
+    /// A dangling index is a hard error — silently synthesizing without voice
+    /// conditioning produces garbled speech with no diagnostic, which is far
+    /// harder to debug in the field than an explicit `InvalidVoice`.
+    /// (Borrows only the voice fields, not `&self`, so callers can keep
+    /// mutating `flowlm`/`mimi` while the returned reference is alive.)
+    fn resolve_voice<'a>(
+        custom_voice: &'a Option<VoiceEmbedding>,
+        voice_bank: &'a VoiceBank,
+        voice_index: u32,
+    ) -> std::result::Result<&'a VoiceEmbedding, PocketTTSError> {
+        if let Some(custom) = custom_voice {
+            return Ok(custom);
+        }
+        voice_bank
+            .get(voice_index as usize)
+            .ok_or(PocketTTSError::InvalidVoice(voice_index))
     }
 
     /// Check the safetensors header against `EXPECTED_MODEL_SHAPES`.
@@ -342,11 +375,11 @@ impl PocketTTSModel {
         .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
 
         // Get voice embedding
-        let voice = if let Some(ref custom) = self.custom_voice {
-            Some(custom)
-        } else {
-            self.voice_bank.get(self.config.voice_index as usize)
-        };
+        let voice = Some(Self::resolve_voice(
+            &self.custom_voice,
+            &self.voice_bank,
+            self.config.voice_index,
+        )?);
 
         // Reset caches for new sequence
         self.flowlm.reset_cache();
@@ -430,11 +463,11 @@ impl PocketTTSModel {
         .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
 
         // Get voice embedding
-        let voice = if let Some(ref custom) = self.custom_voice {
-            Some(custom)
-        } else {
-            self.voice_bank.get(self.config.voice_index as usize)
-        };
+        let voice = Some(Self::resolve_voice(
+            &self.custom_voice,
+            &self.voice_bank,
+            self.config.voice_index,
+        )?);
 
         // Pre-extract normalization tensors (to avoid borrowing self.flowlm in callback)
         let emb_mean = self.flowlm.emb_mean().clone();
@@ -650,11 +683,11 @@ impl PocketTTSModel {
         .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
 
         // Get voice embedding
-        let voice = if let Some(ref custom) = self.custom_voice {
-            Some(custom)
-        } else {
-            self.voice_bank.get(self.config.voice_index as usize)
-        };
+        let voice = Some(Self::resolve_voice(
+            &self.custom_voice,
+            &self.voice_bank,
+            self.config.voice_index,
+        )?);
 
         // Reset caches for new sequence
         self.flowlm.reset_cache();
@@ -718,11 +751,11 @@ impl PocketTTSModel {
         )
         .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
 
-        let voice = if let Some(ref custom) = self.custom_voice {
-            Some(custom)
-        } else {
-            self.voice_bank.get(self.config.voice_index as usize)
-        };
+        let voice = Some(Self::resolve_voice(
+            &self.custom_voice,
+            &self.voice_bank,
+            self.config.voice_index,
+        )?);
 
         self.flowlm.reset_cache();
 

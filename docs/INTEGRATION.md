@@ -108,28 +108,37 @@ YourApp.app/
 
 ```swift
 import Foundation
+import AVFoundation
 
-// Get path to model directory in bundle
+// Get path to model directory in bundle (folder must be named "Models")
 guard let modelPath = Bundle.main.path(forResource: "Models", ofType: nil) else {
     fatalError("Models not found in bundle")
 }
 
 // Initialize engine
-let engine = try PocketTTSEngine(modelPath: modelPath)
+let engine = try PocketTtsEngine(modelPath: modelPath)
 
-// Configure voice and settings
-let config = TTSConfig(
-    voiceIndex: 0,      // 0-7 for different voices
-    temperature: 0.7,   // 0.0-1.0, higher = more variation
-    speed: 1.0          // 0.5-2.0, speech rate
+// Configure voice and settings.
+// TtsConfig has NO default field values — every field is required.
+let config = TtsConfig(
+    voiceIndex: 0,          // 0-7 for different voices
+    temperature: 0.7,       // higher = more variation
+    topP: 0.9,              // nucleus sampling cutoff
+    speed: 1.0,             // 0.5-2.0, speech rate
+    consistencySteps: 2,    // sampler steps (1 = lowest latency)
+    useFixedSeed: false,
+    seed: 42
 )
 try engine.configure(config: config)
 
-// Synthesize text
+// Synthesize text.
+// SynthesisResult.audioData is a COMPLETE WAV file (Int16 PCM, 24 kHz, mono).
+// result.sampleRate == 24000, result.channels == 1, result.durationSeconds is the length.
 let result = try engine.synthesize(text: "Hello, world!")
 
-// result.samples contains Float32 audio at 24kHz
-// result.sampleRate is 24000
+// Because it is a self-contained WAV, AVAudioPlayer plays it directly.
+let player = try AVAudioPlayer(data: result.audioData)
+player.play()
 ```
 
 ### Using the Swift Wrapper (Recommended)
@@ -138,21 +147,23 @@ The `PocketTTSSwift.swift` wrapper provides a modern async/await API:
 
 ```swift
 import Foundation
+import AVFoundation
 
-// Create actor-based engine
-let tts = PocketTTSSwift()
+// Create actor-based engine with the model path, then load.
+let tts = PocketTTSSwift(modelPath: modelPath)
 
 // Load model (async)
-try await tts.load(modelPath: modelPath)
+try await tts.load()
 
-// Configure
+// Configure with a preset (or a custom PocketTTSSwift.Config)
 try await tts.configure(.default)
-// Or: .lowLatency, .highQuality, or custom TTSConfig
+// Or: .lowLatency, .highQuality, or PocketTTSSwift.Config(...)
 
-// Synthesize (async)
+// Synthesize (async). result.audioData is a complete WAV, same as the raw engine.
 let result = try await tts.synthesize(text: "Hello, world!")
 
-// Play audio...
+let player = try AVAudioPlayer(data: result.audioData)
+player.play()
 ```
 
 ### Available Voices
@@ -170,20 +181,49 @@ let result = try await tts.synthesize(text: "Hello, world!")
 
 ### Configuration Presets
 
+The raw `TtsConfig` binding has no presets — you always supply all seven fields.
+Presets live on the `PocketTTSSwift.Config` wrapper type:
+
 ```swift
 // Default balanced settings
-TTSConfig.default  // voice: 0, temp: 0.7, speed: 1.0
+PocketTTSSwift.Config.default      // temp 0.7, topP 0.9, speed 1.0, consistencySteps 2
 
 // Low latency for real-time
-TTSConfig.lowLatency  // voice: 0, temp: 0.5, speed: 1.1
+PocketTTSSwift.Config.lowLatency   // as default but consistencySteps 1
 
 // High quality for offline
-TTSConfig.highQuality  // voice: 0, temp: 0.8, speed: 0.95
+PocketTTSSwift.Config.highQuality  // temp 0.5, consistencySteps 4
 ```
 
 ## Playing Audio
 
-### Using AVAudioEngine
+### Sync path — `AVAudioPlayer` (the WAV case)
+
+`SynthesisResult.audioData` from `synthesize` / `synthesizeWithVoice` /
+`synthesizeNoiseMatched` / `decodeLatents` is a **complete WAV file** (RIFF
+header + Int16 PCM, 24 kHz, mono). It carries its own header, so the simplest
+correct playback is `AVAudioPlayer(data:)`:
+
+```swift
+import AVFoundation
+
+try AVAudioSession.sharedInstance().setCategory(.playback)
+try AVAudioSession.sharedInstance().setActive(true)
+
+let result = try engine.synthesize(text: "Hello, world!")
+
+// audioData is a self-contained WAV — no manual buffer construction needed.
+let player = try AVAudioPlayer(data: result.audioData)
+player.play()
+```
+
+### Streaming path — raw PCM chunks (NOT WAV)
+
+`startTrueStreaming(text:handler:)` delivers `AudioChunk`s to a `TtsEventHandler`.
+**Streaming chunks are raw PCM, not WAV:** each `chunk.audioData` is a run of
+**Float32 samples, little-endian, mono, 24 kHz** (`chunk.sampleRate == 24000`),
+4 bytes per sample, with **no WAV header**. Do not hand these to
+`AVAudioPlayer(data:)` — schedule them into `AVAudioEngine` yourself:
 
 ```swift
 import AVFoundation
@@ -191,70 +231,154 @@ import AVFoundation
 let audioEngine = AVAudioEngine()
 let playerNode = AVAudioPlayerNode()
 
-// Setup audio session
-try AVAudioSession.sharedInstance().setCategory(.playback)
-try AVAudioSession.sharedInstance().setActive(true)
-
-// Create audio format (24kHz mono Float32)
 let format = AVAudioFormat(
     commonFormat: .pcmFormatFloat32,
-    sampleRate: Double(result.sampleRate),
+    sampleRate: 24000,   // matches chunk.sampleRate
     channels: 1,
     interleaved: false
 )!
 
-// Create buffer
-let buffer = AVAudioPCMBuffer(
-    pcmFormat: format,
-    frameCapacity: AVAudioFrameCount(result.samples.count)
-)!
-buffer.frameLength = buffer.frameCapacity
-
-// Copy samples
-result.samples.withUnsafeBufferPointer { ptr in
-    buffer.floatChannelData![0].update(from: ptr.baseAddress!, count: ptr.count)
-}
-
-// Attach and connect
 audioEngine.attach(playerNode)
 audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: format)
-
-// Play
 try audioEngine.start()
-playerNode.scheduleBuffer(buffer, completionHandler: nil)
 playerNode.play()
+
+final class PlaybackHandler: TtsEventHandler {
+    let node: AVAudioPlayerNode
+    let format: AVAudioFormat
+    init(node: AVAudioPlayerNode, format: AVAudioFormat) {
+        self.node = node
+        self.format = format
+    }
+
+    func onAudioChunk(chunk: AudioChunk) {
+        // Reinterpret the raw little-endian Float32 bytes as [Float].
+        let samples: [Float] = chunk.audioData.withUnsafeBytes { raw in
+            Array(raw.bindMemory(to: Float.self))
+        }
+        guard !samples.isEmpty,
+              let buffer = AVAudioPCMBuffer(
+                  pcmFormat: format,
+                  frameCapacity: AVAudioFrameCount(samples.count)
+              ) else { return }
+        buffer.frameLength = AVAudioFrameCount(samples.count)
+        samples.withUnsafeBufferPointer { ptr in
+            buffer.floatChannelData![0].update(from: ptr.baseAddress!, count: ptr.count)
+        }
+        node.scheduleBuffer(buffer, completionHandler: nil)
+    }
+
+    func onProgress(progress: Float) {}
+    func onComplete() {}
+    func onError(message: String) {
+        // ALWAYS log the message — see Error Handling below.
+        print("Streaming error: \(message)")
+    }
+}
+
+let handler = PlaybackHandler(node: playerNode, format: format)
+try engine.startTrueStreaming(text: "Hello, world!", handler: handler)
 ```
 
+> The `PocketTTSSwift` actor wraps this in an `AsyncThrowingStream` via
+> `synthesizeStreaming(text:)`, yielding chunks with the same raw-PCM payload.
+
 ## Error Handling
+
+All throwing engine methods throw `PocketTtsError`. Every case carries a
+`message: String` payload. **Always log that message.** A past on-device field
+failure was undiagnosable for weeks because the host app never logged the
+message string — the single most useful data point was the exact error text
+(see [../APP-SIDE-FINDINGS.md](../APP-SIDE-FINDINGS.md)).
 
 ```swift
 do {
     let result = try engine.synthesize(text: text)
-} catch let error as TTSError {
+} catch let error as PocketTtsError {
     switch error {
-    case .notLoaded:
-        print("Engine not loaded")
-    case .invalidConfig:
-        print("Invalid configuration")
-    case .synthesisError(let message):
-        print("Synthesis failed: \(message)")
-    default:
-        print("TTS error: \(error)")
+    case .ModelNotLoaded(let message):
+        print("Model not loaded: \(message)")
+    case .ModelLoadFailed(let message):
+        print("Model load failed: \(message)")
+    case .TokenizationFailed(let message):
+        print("Tokenization failed: \(message)")
+    case .InferenceFailed(let message):
+        print("Inference failed: \(message)")
+    case .InvalidVoice(let message):
+        print("Invalid voice: \(message)")
+    case .InvalidConfig(let message):
+        print("Invalid config: \(message)")
+    case .AudioEncodingFailed(let message):
+        print("Audio encoding failed: \(message)")
+    case .IoError(let message):
+        print("I/O error: \(message)")
     }
 } catch {
     print("Unexpected error: \(error)")
 }
 ```
 
+### Error case reference
+
+| Case | Likely cause | What to do |
+|------|--------------|------------|
+| `ModelNotLoaded` | Called `synthesize`/`configure` before the engine finished loading (or after `unload()`) | Ensure the `PocketTtsEngine(modelPath:)` init succeeded before use |
+| `ModelLoadFailed` | Missing/corrupt `model.safetensors`, wrong `modelPath`, or out-of-memory during load (device-only) | Verify the bundle path and files; check memory (see Deployment notes) |
+| `TokenizationFailed` | Missing/corrupt `tokenizer.model`, or unencodable input text | Verify `tokenizer.model` is bundled; sanitize input |
+| `InferenceFailed` | Runtime failure during transformer/decoder inference | Log the message; capture the input text; file an issue with the string |
+| `InvalidVoice` | `voiceIndex` out of range, or voice file format mismatched to the model generation (v1 vs v2) | Use index 0-7; bundle voices from the same generation as the weights |
+| `InvalidConfig` | A `TtsConfig` field is out of range | Check `temperature`, `topP`, `speed`, `consistencySteps` |
+| `AudioEncodingFailed` | WAV/PCM encoding failed | Log the message; likely an internal bug — report it |
+| `IoError` | Filesystem error reading model/voice files | Confirm files exist, are readable, and are not in purgeable storage |
+
+> The `PocketTTSSwift` wrapper surfaces these as
+> `PocketTTSSwiftError.synthesisError(message)` (streaming) or rethrows the
+> original error — the message is preserved either way, so log it.
+
+## Deployment notes
+
+Three hard-won facts that only surface on physical devices:
+
+1. **Storage location.** Model files must live in the **app bundle** or the app's
+   **Documents** directory — **never** `Caches`, `tmp`, or any purgeable /
+   iCloud-offloadable location. The engine memory-maps `model.safetensors`; if
+   iOS purges or offloads the file while it is mapped, the next access faults
+   with **SIGBUS**. This fails **only on device** (the simulator never purges),
+   so it will pass every simulator test and crash in the field.
+
+2. **Memory.** Weights are **BF16 on disk (~220-235 MB)** but are loaded as
+   **F32**, so the engine reaches **~470 MB resident** after load, with a higher
+   transient spike **during** load. Consequences:
+   - **Do not use in app extensions.** Keyboard, Share, and Siri extensions have
+     ~40-120 MB memory limits — the model cannot load there and will fail
+     device-only.
+   - On memory-constrained devices, expect `ModelLoadFailed` (device-only). Call
+     `unload()` when you no longer need synthesis.
+
+3. **Case sensitivity.** Device filesystems (APFS) are **case-sensitive**; the
+   simulator is usually **case-insensitive**. Bundle resource casing must match
+   **exactly**: `model.safetensors`, `tokenizer.model`, `voices/`, and lowercase
+   voice filenames (`alba.safetensors`, ...). A casing mismatch loads fine in the
+   simulator and throws `ModelLoadFailed` / `IoError` on device.
+
+## Reference Integration & Experimentation
+
+The included demo app at `tests/ios-harness/PocketTTSDemo` is the canonical
+reference integration and a hands-on experimentation harness — it wires up the
+XCFramework, bundles a `Models/` folder, exercises sync and streaming paths, and
+includes a Compare tab for the noise-matched correlation gate. Use it as a
+working example and to reproduce issues. See
+[../tests/ios-harness/README.md](../tests/ios-harness/README.md) for setup.
+
 ## Performance Tips
 
-1. **Reuse the engine**: Creating `PocketTTSEngine` loads the model. Do this once at app startup.
+1. **Reuse the engine**: Creating `PocketTtsEngine` loads the model. Do this once at app startup.
 
 2. **Pre-warm**: Call `synthesize` with a short phrase during loading to warm up the model.
 
 3. **Background thread**: Synthesis is CPU-intensive. Use async/await or dispatch to background.
 
-4. **Memory**: The model uses ~300MB RAM when loaded. Consider unloading if memory-constrained.
+4. **Memory**: The model reaches ~470 MB resident once loaded (see Deployment notes). Call `unload()` if memory-constrained.
 
 ## Troubleshooting
 

@@ -37,6 +37,22 @@ pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// Build provenance: version, git commit (with `-dirty` marker), and UTC
+/// build time, e.g. `pocket-tts-ios 0.5.0 (a1b2c3d..., v0.5.0, built 2026-07-08T02:00:00Z)`.
+///
+/// Consuming apps should log this at engine init so a misbehaving build in
+/// the field can always be traced to its exact commit. Added after a field
+/// failure where the running framework's provenance could not be determined.
+pub fn build_info() -> String {
+    format!(
+        "pocket-tts-ios {} ({}, {}, built {})",
+        env!("CARGO_PKG_VERSION"),
+        env!("POCKET_TTS_GIT_SHA"),
+        env!("POCKET_TTS_GIT_DESCRIBE"),
+        env!("POCKET_TTS_BUILD_TIME"),
+    )
+}
+
 /// Get available voices
 pub fn available_voices() -> Vec<PocketVoiceInfo> {
     vec![
