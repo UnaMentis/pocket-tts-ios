@@ -35,6 +35,12 @@ This gate is non-negotiable and cannot be satisfied by the Simulator.
       iPhone** and install it on the device.
 - [ ] Run **engine load** on device — confirm the model loads without error.
 - [ ] Run **synthesize** on device — confirm non-empty audio actually plays.
+- [ ] **Voice-list sync check**: the voices shown in the demo UI must come from
+      `engine.loadedVoices()` and exactly match the voice files in the bundled
+      model directory. Synthesize with **every listed voice** — each must
+      produce audio (no `InvalidVoice`). A static UI voice list is a bug even
+      if it happens to match today (this shipped once: UI offered 8 voices,
+      bundle had 1).
 - [ ] Run the **Compare tab noise-matched gate** on device and confirm it reads
       the expected correlation (≈1.0000 on the canonical phrases).
 - [ ] Record, in the release notes / audit log: **device model, iOS version,

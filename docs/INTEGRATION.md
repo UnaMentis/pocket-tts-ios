@@ -120,11 +120,17 @@ let engine = try PocketTtsEngine(modelPath: modelPath)
 
 // Configure voice and settings.
 // TtsConfig has NO default field values — every field is required.
+// Build the voice list from engine.loadedVoices() — the voices actually
+// present in your model directory — never from a hardcoded list.
+//
+// ⚠️ topP and speed are INERT in v0.5.0: they are accepted and
+// range-validated but not yet applied by the synthesis pipeline.
+// Pass the defaults (0.9 / 1.0) and do not rely on them.
 let config = TtsConfig(
-    voiceIndex: 0,          // 0-7 for different voices
+    voiceIndex: 0,          // index into engine.loadedVoices()
     temperature: 0.7,       // higher = more variation
-    topP: 0.9,              // nucleus sampling cutoff
-    speed: 1.0,             // 0.5-2.0, speech rate
+    topP: 0.9,              // INERT in v0.5.0 — reserved
+    speed: 1.0,             // INERT in v0.5.0 — reserved
     consistencySteps: 2,    // sampler steps (1 = lowest latency)
     useFixedSeed: false,
     seed: 42
@@ -376,7 +382,19 @@ working example and to reproduce issues. See
 
 2. **Pre-warm**: Call `synthesize` with a short phrase during loading to warm up the model.
 
-3. **Background thread**: Synthesis is CPU-intensive. Use async/await or dispatch to background.
+3. **Never call synthesis on the main actor**: `synthesize` and
+   `startTrueStreaming` are *blocking* calls that run for the full synthesis
+   duration (streaming callbacks fire inline from the blocked call). Inside a
+   `@MainActor` type, a plain `Task { }` **inherits the main actor** — the
+   call will freeze your entire UI and queue every tap until it finishes
+   (this bug shipped in our own demo). Use `Task.detached` or an explicitly
+   non-main executor:
+
+   ```swift
+   let result = try await Task.detached(priority: .userInitiated) {
+       try engine.synthesize(text: text)
+   }.value
+   ```
 
 4. **Memory**: The model reaches ~470 MB resident once loaded (see Deployment notes). Call `unload()` if memory-constrained.
 

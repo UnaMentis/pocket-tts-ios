@@ -117,6 +117,13 @@ impl PocketTTSModel {
         })
     }
 
+    /// Names of the voices actually loaded from the model directory, in
+    /// voice-index order. This — not any static list — is the source of truth
+    /// for which `voice_index` values are valid.
+    pub fn loaded_voice_names(&self) -> &[String] {
+        self.voice_bank.names()
+    }
+
     /// Resolve the active voice embedding: the custom voice if set, otherwise
     /// the configured `voice_index` from the voice bank.
     ///

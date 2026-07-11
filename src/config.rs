@@ -14,7 +14,7 @@ pub struct PocketVoiceInfo {
 /// TTS synthesis configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TTSConfig {
-    /// Voice index (0-7 for built-in voices)
+    /// Voice index into the loaded voice bank (see `loaded_voices()`)
     pub voice_index: u32,
 
     /// Temperature for sampling (0.0-1.0)
@@ -22,9 +22,17 @@ pub struct TTSConfig {
     pub temperature: f32,
 
     /// Top-P (nucleus) sampling threshold (0.1-1.0)
+    ///
+    /// **INERT in v0.5.0**: accepted and range-validated but not applied —
+    /// the consistency-distilled sampler does not perform nucleus sampling.
+    /// Reserved for future use; do not rely on it changing output.
     pub top_p: f32,
 
     /// Speech speed multiplier (0.5-2.0)
+    ///
+    /// **INERT in v0.5.0**: accepted and range-validated but not applied by
+    /// the synthesis pipeline. Reserved for future use; audio is always
+    /// generated at the model's natural rate.
     pub speed: f32,
 
     /// Number of consistency steps (1-4)

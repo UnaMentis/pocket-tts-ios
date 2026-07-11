@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use candle_core::Device;
 
 use crate::audio;
-use crate::config::TTSConfig;
+use crate::config::{PocketVoiceInfo, TTSConfig};
 use crate::error::PocketTTSError;
 use crate::models::PocketTTSModel;
 use crate::{AudioChunk, SynthesisResult, TTSEventHandler};
@@ -58,6 +58,37 @@ impl PocketTTSEngine {
     /// Get parameter count
     pub fn parameter_count(&self) -> u64 {
         117_856_642
+    }
+
+    /// Voices actually loaded from this engine's model directory, in
+    /// voice-index order. This is the source of truth a UI must use for its
+    /// voice list — the static `available_voices()` is the canonical full set
+    /// and may include voices this model directory does not ship.
+    pub fn loaded_voices(&self) -> Vec<PocketVoiceInfo> {
+        let Ok(guard) = self.model.lock() else {
+            return Vec::new();
+        };
+        let Some(model) = guard.as_ref() else {
+            return Vec::new();
+        };
+        model
+            .loaded_voice_names()
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let (gender, description) = voice_metadata(name);
+                let mut display = name.clone();
+                if let Some(first) = display.get_mut(0..1) {
+                    first.make_ascii_uppercase();
+                }
+                PocketVoiceInfo {
+                    index: index as u32,
+                    name: display,
+                    gender: gender.to_string(),
+                    description: description.to_string(),
+                }
+            })
+            .collect()
     }
 
     /// Configure synthesis parameters
@@ -337,6 +368,23 @@ impl PocketTTSEngine {
         if let Ok(mut model_guard) = self.model.lock() {
             *model_guard = None;
         }
+    }
+}
+
+/// Gender/description metadata for the known built-in voice names.
+/// Unknown names (future models) get neutral metadata rather than an error —
+/// the voice is real and loadable either way.
+fn voice_metadata(name: &str) -> (&'static str, &'static str) {
+    match name {
+        "alba" => ("female", "Clear, neutral female voice"),
+        "marius" => ("male", "Warm male voice"),
+        "javert" => ("male", "Authoritative male voice"),
+        "jean" => ("male", "Gentle male voice"),
+        "fantine" => ("female", "Soft female voice"),
+        "cosette" => ("female", "Young female voice"),
+        "eponine" => ("female", "Expressive female voice"),
+        "azelma" => ("female", "Bright female voice"),
+        _ => ("unknown", "Voice"),
     }
 }
 

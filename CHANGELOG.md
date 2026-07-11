@@ -65,6 +65,14 @@ XCFramework). The repository is now ~15MB to clone (was ~190MB).
   both v1 and v2 (per-frame minima >0.998, output length exactly matches the
   reference). Raw artifact: `docs/audit/correlation-v0.5.0-2026-06-11.txt`.
 
+### Known Limitations
+- `TtsConfig.top_p` and `TtsConfig.speed` are **inert**: accepted and
+  range-validated, but not applied by the synthesis pipeline. They are
+  reserved for future use — do not rely on them changing output.
+- `set_reference_audio` (voice cloning) returns a not-implemented error by
+  design; it requires a voice encoder model that is not part of this release.
+- See `docs/TEST_COVERAGE.md` for the full capability-to-test-coverage map.
+
 ## [0.4.1] - 2026-01-27
 
 ### Removed

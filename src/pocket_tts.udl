@@ -22,6 +22,9 @@ dictionary PocketVoiceInfo {
 };
 
 // TTS configuration
+// NOTE (v0.5.0): top_p and speed are currently INERT — accepted and
+// range-validated, but not yet applied by the synthesis pipeline.
+// Reserved for future use; do not rely on them changing output.
 dictionary TTSConfig {
     u32 voice_index;
     f32 temperature;
@@ -80,6 +83,12 @@ interface PocketTTSEngine {
     // Get model info
     string model_version();
     u64 parameter_count();
+
+    // Voices actually loaded from this engine's model directory, in
+    // voice-index order. UIs MUST build their voice list from this —
+    // the static available_voices() is the canonical full set and may
+    // include voices the loaded model directory does not ship.
+    sequence<PocketVoiceInfo> loaded_voices();
 
     // Configure synthesis parameters
     [Throws=PocketTTSError]

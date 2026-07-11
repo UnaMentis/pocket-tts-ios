@@ -61,12 +61,20 @@ struct ContentView: View {
                         Text("Voice")
                             .font(.headline)
 
-                        Picker("Voice", selection: $viewModel.selectedVoice) {
-                            ForEach(TTSVoice.allCases) { voice in
-                                Text(voice.displayName).tag(voice)
+                        // Voice list comes from the engine — exactly the
+                        // voices the loaded model directory ships, no more.
+                        if viewModel.loadedVoices.isEmpty {
+                            Text(viewModel.isLoaded ? "No voices in model" : "Load model to list voices")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        } else {
+                            Picker("Voice", selection: $viewModel.selectedVoiceIndex) {
+                                ForEach(viewModel.loadedVoices, id: \.index) { voice in
+                                    Text(voice.name).tag(voice.index)
+                                }
                             }
+                            .pickerStyle(.segmented)
                         }
-                        .pickerStyle(.segmented)
                     }
 
                     // Synthesis Mode Toggle
@@ -94,12 +102,24 @@ struct ContentView: View {
 
                     // Controls
                     HStack(spacing: 16) {
-                        Button(action: viewModel.synthesize) {
-                            Label("Synthesize", systemImage: "waveform")
-                                .frame(maxWidth: .infinity)
+                        // While a streaming synthesis runs, this becomes a Stop
+                        // button wired to engine.cancel() — the demo must
+                        // exercise cancellation, not just happy-path synthesis.
+                        if viewModel.isSynthesizing && viewModel.useStreaming {
+                            Button(action: viewModel.cancelSynthesis) {
+                                Label("Stop Synthesis", systemImage: "xmark.octagon.fill")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.red)
+                        } else {
+                            Button(action: viewModel.synthesize) {
+                                Label("Synthesize", systemImage: "waveform")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(viewModel.isSynthesizing || viewModel.inputText.isEmpty)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(viewModel.isSynthesizing || viewModel.inputText.isEmpty)
 
                         Button(action: {
                             if viewModel.isPlaying {
@@ -121,6 +141,16 @@ struct ContentView: View {
                     if let samples = viewModel.audioSamples {
                         WaveformView(samples: samples)
                             .frame(height: 100)
+                    }
+
+                    // Build provenance — always visible so any screenshot or
+                    // bug report identifies the exact engine build under test.
+                    if !viewModel.engineBuildInfo.isEmpty {
+                        Text(viewModel.engineBuildInfo)
+                            .font(.caption2.monospaced())
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .textSelection(.enabled)
                     }
 
                     Spacer()

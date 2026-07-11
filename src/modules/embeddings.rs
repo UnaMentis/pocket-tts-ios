@@ -215,10 +215,14 @@ impl VoiceEmbedding {
     }
 }
 
-/// Voice embedding bank (all 8 built-in voices)
+/// Voice embedding bank (the voices actually present in the model directory)
 #[derive(Debug)]
 pub struct VoiceBank {
     voices: Vec<VoiceEmbedding>,
+    /// File-stem name of each loaded voice, parallel to `voices`. A voice's
+    /// index is its position here — NOT its position in the canonical 8-name
+    /// list — so consumers must enumerate this bank, never assume the full set.
+    names: Vec<String>,
     voice_dim: usize,
 }
 
@@ -226,6 +230,7 @@ impl VoiceBank {
     pub fn new(voice_dim: usize) -> Self {
         Self {
             voices: Vec::with_capacity(8),
+            names: Vec::with_capacity(8),
             voice_dim,
         }
     }
@@ -237,6 +242,7 @@ impl VoiceBank {
         ];
 
         let mut voices = Vec::with_capacity(8);
+        let mut names = Vec::with_capacity(8);
         let mut voice_dim = 512; // Default
 
         for name in &voice_names {
@@ -245,15 +251,25 @@ impl VoiceBank {
                 let voice = VoiceEmbedding::from_file(&path, device)?;
                 voice_dim = voice.voice_dim();
                 voices.push(voice);
+                names.push((*name).to_string());
             }
         }
 
-        Ok(Self { voices, voice_dim })
+        Ok(Self {
+            voices,
+            names,
+            voice_dim,
+        })
     }
 
     /// Get voice by index
     pub fn get(&self, index: usize) -> Option<&VoiceEmbedding> {
         self.voices.get(index)
+    }
+
+    /// Names of the loaded voices, in index order
+    pub fn names(&self) -> &[String] {
+        &self.names
     }
 
     /// Number of loaded voices

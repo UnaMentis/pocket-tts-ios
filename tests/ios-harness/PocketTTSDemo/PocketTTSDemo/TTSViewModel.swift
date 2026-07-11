@@ -8,7 +8,14 @@ import SwiftUI
 @MainActor
 class TTSViewModel: ObservableObject {
     @Published var inputText: String = "Hello! This is a test of the Pocket TTS text to speech system."
-    @Published var selectedVoice: TTSVoice = .alba
+    /// Voices actually present in the loaded model directory, straight from
+    /// the engine. The UI voice list MUST come from here — a static list can
+    /// silently drift from what the model ships (that bug shipped once).
+    @Published var loadedVoices: [PocketVoiceInfo] = []
+    @Published var selectedVoiceIndex: UInt32 = 0
+    /// Engine build provenance, shown in the UI so every screenshot/bug report
+    /// identifies the exact build under test (see docs/RELEASE_CHECKLIST.md).
+    @Published var engineBuildInfo: String = ""
     @Published var status: TTSStatus?
     @Published var lastTiming: SynthesisTiming?
     @Published var audioData: Data?
@@ -52,9 +59,21 @@ class TTSViewModel: ObservableObject {
                 // Initialize the engine
                 engine = try PocketTtsEngine(modelPath: modelPath)
 
+                // Sync the UI voice list with what the model actually loaded
+                loadedVoices = engine?.loadedVoices() ?? []
+                if !loadedVoices.contains(where: { $0.index == selectedVoiceIndex }) {
+                    selectedVoiceIndex = loadedVoices.first?.index ?? 0
+                }
+                print("[PocketTTS] Loaded voices: \(loadedVoices.map(\.name).joined(separator: ", "))")
+
+                // Log + display build provenance (RELEASE_CHECKLIST: consuming
+                // apps must record which exact build they're running).
+                engineBuildInfo = buildInfo()
+                print("[PocketTTS] \(engineBuildInfo)")
+
                 // Configure with default voice
                 let config = TtsConfig(
-                    voiceIndex: UInt32(selectedVoice.rawValue),
+                    voiceIndex: selectedVoiceIndex,
                     temperature: 0.7,
                     topP: 0.9,
                     speed: 1.0,
@@ -113,7 +132,7 @@ class TTSViewModel: ObservableObject {
 
                 // Update voice if changed
                 let config = TtsConfig(
-                    voiceIndex: UInt32(selectedVoice.rawValue),
+                    voiceIndex: selectedVoiceIndex,
                     temperature: 0.7,
                     topP: 0.9,
                     speed: 1.0,
@@ -125,8 +144,14 @@ class TTSViewModel: ObservableObject {
 
                 print("[PocketTTS] Synthesizing (sync): \(inputText)")
 
-                // Synthesize
-                let result = try ttsEngine.synthesize(text: inputText)
+                // Synthesize OFF the main actor — this is a blocking multi-
+                // second FFI call, and this @MainActor class's Task {} blocks
+                // inherit the main actor. Running it inline freezes the whole
+                // UI for the duration (no taps, no Stop button).
+                let text = inputText
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try ttsEngine.synthesize(text: text)
+                }.value
 
                 let synthesisTime = CFAbsoluteTimeGetCurrent() - startTime
                 let audioDuration = result.durationSeconds
@@ -187,7 +212,7 @@ class TTSViewModel: ObservableObject {
 
                 // Update voice if changed
                 let config = TtsConfig(
-                    voiceIndex: UInt32(selectedVoice.rawValue),
+                    voiceIndex: selectedVoiceIndex,
                     temperature: 0.7,
                     topP: 0.9,
                     speed: 1.0,
@@ -256,8 +281,14 @@ class TTSViewModel: ObservableObject {
                 // Retain handler reference
                 self.streamingHandler = handler
 
-                // Start true streaming synthesis (optimized TTFA)
-                try ttsEngine.startTrueStreaming(text: inputText, handler: handler)
+                // Start true streaming synthesis (optimized TTFA), OFF the
+                // main actor — the call blocks until the stream finishes, and
+                // running it on the main actor freezes the UI, making the
+                // Stop button (engine.cancel) unreachable.
+                let text = inputText
+                try await Task.detached(priority: .userInitiated) {
+                    try ttsEngine.startTrueStreaming(text: text, handler: handler)
+                }.value
 
             } catch {
                 status = TTSStatus(
@@ -269,6 +300,18 @@ class TTSViewModel: ObservableObject {
                 isSynthesizing = false
             }
         }
+    }
+
+    /// Cancel an in-flight streaming synthesis via engine.cancel().
+    /// The engine stops at the next chunk boundary; on_complete never fires
+    /// for a cancelled stream, so UI state is reset here.
+    func cancelSynthesis() {
+        guard isSynthesizing else { return }
+        engine?.cancel()
+        resourceMonitor.markSynthesisEnd()
+        status = TTSStatus(message: "Synthesis cancelled", isLoading: false, type: .info)
+        isSynthesizing = false
+        print("[PocketTTS] Synthesis cancelled by user")
     }
 
     /// Build a WAV file from raw float samples
@@ -444,32 +487,6 @@ class AudioPlayerDelegate: NSObject, AVAudioPlayerDelegate {
 }
 
 // MARK: - Supporting Types
-
-enum TTSVoice: Int, CaseIterable, Identifiable {
-    case alba = 0
-    case marius = 1
-    case javert = 2
-    case jean = 3
-    case fantine = 4
-    case cosette = 5
-    case eponine = 6
-    case azelma = 7
-
-    var id: Int { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .alba: return "Alba"
-        case .marius: return "Marius"
-        case .javert: return "Javert"
-        case .jean: return "Jean"
-        case .fantine: return "Fantine"
-        case .cosette: return "Cosette"
-        case .eponine: return "Eponine"
-        case .azelma: return "Azelma"
-        }
-    }
-}
 
 struct TTSStatus {
     let message: String
